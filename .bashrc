@@ -25,6 +25,10 @@ remove() {
 	sudo xbps-remove -R "$@"
 }
 
+removeoldkernels() {
+	sudo vkpurge rm all
+}
+
 update() {
 	sudo xbps-install -Syu
 }
@@ -35,6 +39,12 @@ mvp() {
 
 mvpr() {
 	rsync -ah --progress --remove-source-files "$@"
+}
+
+reloadcaddy() {
+    sudo caddy fmt --overwrite /etc/caddy/Caddyfile && \
+    sudo caddy validate --config /etc/caddy/Caddyfile && \
+    sudo caddy reload --config /etc/caddy/Caddyfile
 }
 
 copy() {
@@ -88,23 +98,30 @@ compress() {
     local algo="$1"
     shift || true
 
+    local use_password=0
+
     usage() {
         cat <<'EOF'
 Usage:
-  compress <xz|gz|gzip|zstd|bz2|bzip2|zip|rar> <files-or-folders...>
+  compress <xz|gz|gzip|zstd|bz2|bzip2|lz4|zip|rar|7z> [pass] <files-or-folders...>
 
 Examples:
   compress xz folder
   compress zstd photos/
-  compress gz file1 file2
-  compress zip folder
-  compress rar folder
+  compress zip pass folder
+  compress rar pass folder
+  compress 7z pass folder
 EOF
     }
 
     if [[ -z "$algo" || "$algo" == "-h" || "$algo" == "--help" ]]; then
         usage
         return 1
+    fi
+
+    if [[ "${1:-}" == "pass" ]]; then
+        use_password=1
+        shift
     fi
 
     if [[ $# -eq 0 ]]; then
@@ -115,39 +132,86 @@ EOF
     local out tmp
 
     case "$algo" in
-        xz)
+        xz|best)
+            if [[ $use_password -eq 1 ]]; then
+                echo "Password protection is not supported for xz archives."
+                return 1
+            fi
             out="archive.tar.xz"
             tmp="${out}.tmp"
             tar --exclude="$out" --exclude="$tmp" -cvf "$tmp" -I 'xz -9e --threads=0' "$@"
             mv -f "$tmp" "$out"
             ;;
+
         gz|gzip)
+            if [[ $use_password -eq 1 ]]; then
+                echo "Password protection is not supported for gzip archives."
+                return 1
+            fi
             out="archive.tar.gz"
             tmp="${out}.tmp"
             tar --exclude="$out" --exclude="$tmp" -cvf "$tmp" -I 'gzip -9' "$@"
             mv -f "$tmp" "$out"
             ;;
+
         zstd)
+            if [[ $use_password -eq 1 ]]; then
+                echo "Password protection is not supported for zstd archives."
+                return 1
+            fi
             out="archive.tar.zst"
             tmp="${out}.tmp"
             tar --exclude="$out" --exclude="$tmp" -cvf "$tmp" -I 'zstd -19 -T0' "$@"
             mv -f "$tmp" "$out"
             ;;
+
         bz2|bzip2)
+            if [[ $use_password -eq 1 ]]; then
+                echo "Password protection is not supported for bzip2 archives."
+                return 1
+            fi
             out="archive.tar.bz2"
             tmp="${out}.tmp"
             tar --exclude="$out" --exclude="$tmp" -cvf "$tmp" -I 'bzip2 -9' "$@"
             mv -f "$tmp" "$out"
             ;;
 
+        lz4)
+            if [[ $use_password -eq 1 ]]; then
+                echo "Password protection is not supported for lz4 archives."
+                return 1
+            fi
+            out="archive.tar.lz4"
+            tmp="${out}.tmp"
+            tar --exclude="$out" --exclude="$tmp" -cvf "$tmp" -I 'lz4 -9' "$@"
+            mv -f "$tmp" "$out"
+            ;;
+
         zip)
             out="archive.zip"
-            zip -r "$out" "$@"
+            if [[ $use_password -eq 1 ]]; then
+                zip -e -r "$out" "$@"
+            else
+                zip -r "$out" "$@"
+            fi
             ;;
 
         rar)
             out="archive.rar"
-            rar a "$out" "$@"
+            if [[ $use_password -eq 1 ]]; then
+                rar a -hp "$out" "$@"
+            else
+                rar a "$out" "$@"
+            fi
+            ;;
+
+        7z)
+            out="archive.7z"
+            if [[ $use_password -eq 1 ]]; then
+                7z a -t7z -mx=9 -mhe=on -p "$out" "$@"
+            else
+                7z a -t7z -mx=9 "$out" "$@"
+            fi
             ;;
 
         *)
@@ -166,15 +230,15 @@ md() {
     fi
 }
 
-arpeek() {
+peek() {
     if [[ $# -lt 1 ]]; then
-        printf 'Usage: arpeek <archive>\n' >&2
+        printf 'Usage: peek <archive>\n' >&2
         return 2
     fi
 
     local file="$1"
     if [[ ! -e "$file" ]]; then
-        printf 'arpeek: file not found: %s\n' "$file" >&2
+        printf 'peek: file not found: %s\n' "$file" >&2
         return 2
     fi
 
@@ -188,7 +252,7 @@ arpeek() {
             if command -v unzip >/dev/null 2>&1; then
                 unzip -l -- "$file"
             else
-                printf 'arpeek: unzip not installed\n' >&2
+                printf 'peek: unzip not installed\n' >&2
                 return 4
             fi
             return $?
@@ -200,7 +264,17 @@ arpeek() {
             elif command -v rar >/dev/null 2>&1; then
                 rar l -- "$file"
             else
-                printf 'arpeek: rar/unrar not installed\n' >&2
+                printf 'peek: rar/unrar not installed\n' >&2
+                return 4
+            fi
+            return $?
+            ;;
+
+        application/x-7z-compressed)
+            if command -v 7z >/dev/null 2>&1; then
+                7z l -- "$file"
+            else
+                printf 'peek: 7z not installed\n' >&2
                 return 4
             fi
             return $?
@@ -212,13 +286,24 @@ arpeek() {
             tar -tvjf "$file"; return $? ;;
         application/x-xz|application/x-compress*|application/x-lzip)
             tar -tvJf "$file"; return $? ;;
+        application/x-lz4|application/lz4)
+            if tar --help 2>&1 | grep -q -- '-I '; then
+                tar -I 'lz4 -d -c' -tvf "$file"
+            elif command -v lz4 >/dev/null 2>&1; then
+                lz4 -d -c -- "$file" | tar -tvf -
+            else
+                printf 'peek: lz4 support missing (install lz4)\n' >&2
+                return 4
+            fi
+            return $?
+            ;;
         application/x-zstd|application/zstd)
             if tar --help 2>&1 | grep -q -- '-I '; then
                 tar -I 'zstd -d -c' -tvf "$file"
             elif command -v zstd >/dev/null 2>&1; then
                 zstd -d -c -- "$file" | tar -tvf -
             else
-                printf 'arpeek: zstd support missing (install zstd)\n' >&2
+                printf 'peek: zstd support missing (install zstd)\n' >&2
                 return 4
             fi
             return $?
@@ -229,25 +314,37 @@ arpeek() {
 
     case "$file" in
         *.zip)
-            command -v unzip >/dev/null && unzip -l "$file" && return 0
+            command -v unzip >/dev/null && unzip -l -- "$file" && return 0
             ;;
         *.rar)
             if command -v unrar >/dev/null; then
-                unrar l "$file" && return 0
+                unrar l -- "$file" && return 0
             elif command -v rar >/dev/null; then
-                rar l "$file" && return 0
+                rar l -- "$file" && return 0
+            fi
+            ;;
+        *.7z|*.7z.001)
+            if command -v 7z >/dev/null 2>&1; then
+                7z l -- "$file" && return 0
             fi
             ;;
         *.tar.gz|*.tgz) tar -tvzf "$file"; return $? ;;
         *.tar.bz2|*.tbz2) tar -tvjf "$file"; return $? ;;
         *.tar.xz|*.txz) tar -tvJf "$file"; return $? ;;
+        *.tar.lz4|*.tlz4)
+            if command -v lz4 >/dev/null 2>&1; then
+                lz4 -d -c -- "$file" | tar -tvf - && return 0
+            fi
+            ;;
         *.tar.zst|*.tzst)
-            command -v zstd >/dev/null && zstd -d -c "$file" | tar -tvf - && return 0
+            if command -v zstd >/dev/null 2>&1; then
+                zstd -d -c -- "$file" | tar -tvf - && return 0
+            fi
             ;;
         *.tar) tar -tvf "$file"; return $? ;;
     esac
 
-    printf 'arpeek: unknown format or missing tools\n' >&2
+    printf 'peek: unknown format or missing tools\n' >&2
     return 5
 }
 
@@ -314,9 +411,10 @@ relaxy-dl() {
         return 1
     fi
 
+    local remote_file="$1"
     local dest="${2:-.}"
 
-    scp -O -i "$___rel_pth_sec$1" "$dest"
+    scp -O -i "$___rel_key" "$___rel_host:$___rel_base/$remote_file" "$dest"
 }
 
 relaxy-ls() {
@@ -324,7 +422,7 @@ relaxy-ls() {
 }
 
 _tar_from_stdin() {
-	tar -tvf - 2>/dev/null || { printf 'tarpeek: tar failed to read from stdin\n' >&2; return 3; }
+	tar -tvf - 2>/dev/null || { printf 'tpeek: tar failed to read from stdin\n' >&2; return 3; }
 }
 
 _llm_models() {
@@ -966,125 +1064,7 @@ dockeroff() {
   echo "dockeroff: Docker stopped and disabled from startup."
 }
 
-_oracle_check_docker() {
-  if ! command -v docker >/dev/null 2>&1; then
-    echo "docker not installed."
-    return 1
-  fi
-  if ! docker info >/dev/null 2>&1; then
-    echo "docker daemon not running or no permission."
-    return 1
-  fi
-}
-
-_oracle_ensure_running() {
-  if docker ps -q -f "name=^/oracle-xe$" | grep -q .; then
-    return 0
-  fi
-
-  if docker ps -aq -f "name=^/oracle-xe$" | grep -q .; then
-    echo "Starting oracle-xe..."
-    docker start oracle-xe >/dev/null
-  else
-    echo "oracle-xe container does not exist."
-    return 1
-  fi
-
-  echo -n "Waiting for DB"
-  until docker logs oracle-xe 2>&1 | grep -q "DATABASE IS READY TO USE!"; do
-    sleep 3
-    echo -n "."
-  done
-  echo " OK"
-}
-
-oracle_export() {
-  _oracle_check_docker || return 1
-  _oracle_ensure_running || return 1
-
-  ts=$(date +%Y%m%d_%H%M%S)
-  dump="mattfor_${ts}.dmp"
-  log="export_${ts}.log"
-
-  echo "Exporting schema mattfor (dumpfile: $dump) ..."
-
-  out=$(docker exec oracle-xe bash -lc \
-    "expdp mattfor/amogus@//localhost:1521/XEPDB1 schemas=mattfor directory=DATA_PUMP_DIR dumpfile=$dump logfile=$log" 2>&1) \
-    || { echo "ERROR: expdp failed"; printf '%s\n' "$out"; return 1; }
-
-  dump_path=$(printf '%s\n' "$out" | awk '/Dump file set for/{getline; gsub(/^[[:space:]]+/, ""); print; exit}')
-
-  if [ -z "$dump_path" ]; then
-    echo "Could not parse expdp output for dump path; attempting container directory scan..."
-    # the loop checks each subdirectory under dpdump for the file
-    dump_path=$(docker exec oracle-xe bash -lc \
-      'for d in /opt/oracle/admin/XE/dpdump/*; do if [ -f "$d/'"$dump"'" ]; then echo "$d/'"$dump"'"; exit 0; fi; done' 2>/dev/null || true)
-  fi
-
-  if [ -z "$dump_path" ]; then
-    echo "ERROR: dump file not found inside container after export"
-    echo "expdp output:"
-    printf '%s\n' "$out"
-    return 1
-  fi
-
-  echo "Located dump inside container: $dump_path"
-  echo "Copying dump to host..."
-  docker cp "oracle-xe:$dump_path" . || { echo "ERROR: docker cp failed"; return 1; }
-
-  echo "Export complete: $(pwd)/$dump"
-  echo "If you also want the logfile copied automatically, run:"
-  echo "  docker cp oracle-xe:$(dirname "$dump_path")/$log ."
-}
-
-oracle_import() {
-  _oracle_check_docker || return 1
-  _oracle_ensure_running || return 1
-
-  host_dump=${1:-}
-  if [ -z "$host_dump" ]; then
-    host_dump=$(ls -1t mattfor_*.dmp 2>/dev/null | head -n1 || true)
-    if [ -z "$host_dump" ]; then
-      echo "ERROR: no dump file given and none found in current dir (pattern: mattfor_*.dmp)"
-      return 1
-    fi
-  fi
-
-  if [ ! -f "$host_dump" ]; then
-    echo "ERROR: host dump file not found: $host_dump"
-    return 1
-  fi
-
-  ts=$(date +%Y%m%d_%H%M%S)
-  log="import_${ts}.log"
-  dumpname=$(basename "$host_dump")
-
-  echo "Copying $host_dump into container's DATA_PUMP_DIR..."
-  # copy to the root of dpdump so Data Pump directory object can access it
-  docker cp "$host_dump" "oracle-xe:/opt/oracle/admin/XE/dpdump/$dumpname" || { echo "ERROR: docker cp into container failed"; return 1; }
-
-  echo "Starting impdp (dumpfile=$dumpname)..."
-  docker exec oracle-xe bash -lc \
-    "impdp mattfor/amogus@//localhost:1521/XEPDB1 schemas=mattfor directory=DATA_PUMP_DIR dumpfile=$dumpname logfile=$log" \
-    || { echo "ERROR: impdp failed (check $log inside container)"; return 1; }
-
-  echo "Import finished. Check the import logfile inside the container:"
-  echo "  docker exec oracle-xe bash -lc 'ls -l /opt/oracle/admin/XE/dpdump/ | grep \"$log\" || true'"
-  echo "To fetch the log to host:"
-  echo "  docker cp oracle-xe:/opt/oracle/admin/XE/dpdump/$log ."
-}
-
-fetch_latest_export_artifacts() {
-  container_dir=$(docker exec oracle-xe bash -lc "ls -1d /opt/oracle/admin/XE/dpdump/*/ 2>/dev/null | tail -n1")
-  if [ -n "$container_dir" ]; then
-    echo "Copying contents of $container_dir to host..."
-    docker cp "oracle-xe:$container_dir" . || { echo "docker cp failed"; return 1; }
-  else
-    echo "No sub-directory found under /opt/oracle/admin/XE/dpdump/"
-  fi
-}
-
-### Gaming utilities
+### Bluetooth
 
 btup() {
   if [ -d /etc/sv/dbus ] && [ ! -e /var/service/dbus ]; then
@@ -1180,7 +1160,7 @@ virtup() {
   [ -e /run/libvirt/virtlogd-sock ] && echo " - virtlogd-sock present" || echo " - virtlogd-sock missing"
   [ -e /run/libvirt/libvirt-sock ] && echo " - libvirt-sock present" || echo " - libvirt-sock missing"
 
-  # quick verification
+  # Quick verification
   if command -v virsh >/dev/null 2>&1; then
     echo "virsh connection test:"
     virsh -c qemu:///system list --all || true
@@ -1267,6 +1247,7 @@ alias qr="zbarimg -q --raw"
 alias prolog="setsid swipl-win & disown"
 alias pdf='zathura'
 alias m='micro'
+alias nano='micro'
 alias rg='rg -p'
 alias cd='z'
 alias ls='ls --color=auto'
@@ -1278,6 +1259,7 @@ alias ..='z ..'
 alias ...='z ../..'
 alias relaxy='$___rel_ssh'
 alias torus='$___name'
+alias sandbox='firejail --private=. bash'
 alias rundockerdb='docker start oracle-xe'
 
 # Pretty display
