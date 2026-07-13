@@ -1249,7 +1249,6 @@ alias pdf='zathura'
 alias m='micro'
 alias nano='micro'
 alias rg='rg -p'
-alias cd='z'
 alias ls='ls --color=auto'
 alias ll='ls -lah --color=auto'
 alias la='ls -A --color=auto'
@@ -1257,6 +1256,8 @@ alias lh='du -sh *'
 alias lhh='du -sh -- * .[!.]* 2>/dev/null'
 alias ..='z ..'
 alias ...='z ../..'
+alias ....='z ../../..'
+alias .....='z ../../../..'
 alias relaxy='$___rel_ssh'
 alias torus='$___name'
 alias sandbox='firejail --private=. bash'
@@ -1294,6 +1295,31 @@ export VISUAL=micro
 
 # Zoxide
 eval "$(zoxide init bash)" 2>/dev/null || true
+
+command_not_found_handle() {
+    local cmd="$1"
+
+    case "$cmd" in
+        */*|.|..|~*)
+            printf 'bash: %s: command not found\n' "$cmd" >&2
+            return 127
+            ;;
+    esac
+
+    local dir
+    dir="$(zoxide query "$cmd" 2>/dev/null)" || {
+        printf 'bash: %s: command not found\n' "$cmd" >&2
+        return 127
+    }
+
+    builtin cd -- "$dir"
+}
+
+cd() {
+    z "$@"
+}
+
+shopt -s autocd
 
 # Created by `pipx` on 2026-03-23 13:01:31
 export PATH="$PATH:/home/mattfor/.local/bin"
