@@ -69,6 +69,35 @@ copy() {
   return 1
 }
 
+imgtext() {
+    local tmp
+    tmp=$(mktemp --suffix=.png)
+
+    xclip -selection clipboard -t image/png -o > "$tmp" || {
+        echo "No PNG image found in the clipboard."
+        rm -f "$tmp"
+        return 1
+    }
+
+    tesseract-ocr "$tmp" stdout
+    rm -f "$tmp"
+}
+
+cpimgtxt() {
+    local tmp
+    tmp=$(mktemp --suffix=.png)
+
+    xclip -selection clipboard -t image/png -o > "$tmp" || {
+        echo "No PNG image found in the clipboard."
+        rm -f "$tmp"
+        return 1
+    }
+
+    tesseract-ocr "$tmp" stdout | tee >(copy >/dev/null)
+
+    rm -f "$tmp"
+}
+
 topdf() {
     if [ $# -eq 0 ]; then
         echo "Usage: topdf file.odt [file2.odt ...]"
@@ -378,6 +407,60 @@ activate() {
 
 workon() {
   activate ".venv"
+}
+
+minify() {
+    set -Eeuo pipefail
+
+    local DIST="${1:-dist}"
+
+    command -v esbuild >/dev/null 2>&1 || {
+        echo "Error: esbuild is not installed."
+        return 1
+    }
+
+    command -v rsync >/dev/null 2>&1 || {
+        echo "Error: rsync is not installed."
+        return 1
+    }
+
+    rm -rf "$DIST"
+    mkdir -p "$DIST"
+
+    rsync -a \
+        --exclude='.git' \
+        --exclude='.github' \
+        --exclude='.gitlab' \
+        --exclude='.svn' \
+        --exclude='node_modules' \
+        --exclude="$DIST" \
+        --exclude='.cache' \
+        --exclude='.vscode' \
+        --exclude='.idea' \
+        --exclude='coverage' \
+        --exclude='tmp' \
+        ./ "$DIST/"
+
+    find . \
+        -type f \
+        \( -name '*.js' -o -name '*.css' \) \
+        ! -path "./$DIST/*" \
+        ! -path './node_modules/*' \
+        | while IFS= read -r file; do
+
+            local out="$DIST/${file#./}"
+            mkdir -p "$(dirname "$out")"
+
+            printf 'Minifying %s\n' "$file"
+
+            esbuild "$file" \
+                --minify \
+                --legal-comments=none \
+                --outfile="$out"
+        done
+
+    echo
+    echo "Minified website written to $DIST/"
 }
 
 gitgraph() {
@@ -1243,24 +1326,32 @@ export NVM_DIR="$HOME/.config/nvm"
 [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
 
 # Aliases
-alias qr="zbarimg -q --raw"
-alias prolog="setsid swipl-win & disown"
-alias pdf='zathura'
-alias m='micro'
-alias nano='micro'
-alias rg='rg -p'
-alias ls='ls --color=auto'
-alias ll='ls -lah --color=auto'
-alias la='ls -A --color=auto'
-alias lh='du -sh *'
-alias lhh='du -sh -- * .[!.]* 2>/dev/null'
 alias ..='z ..'
 alias ...='z ../..'
 alias ....='z ../../..'
 alias .....='z ../../../..'
-alias relaxy='$___rel_ssh'
+
+alias m='micro'
+alias rg='rg -p'
+alias nano='micro'
+alias pdf='zathura'
+alias open='xdg-open'
+alias qr="zbarimg -q --raw"
+
 alias torus='$___name'
+alias relaxy='$___rel_ssh'
+alias piwatch='tmux -L piwatch a -t piwatch'
+
+alias lh='du -sh *'
+alias ls='ls --color=auto'
+alias la='ls -A --color=auto'
+alias ll='ls -lah --color=auto'
+alias lhh='du -sh -- * .[!.]* 2>/dev/null'
+
 alias sandbox='firejail --private=. bash'
+
+# Abandoned
+alias prolog="setsid swipl-win & disown"
 alias rundockerdb='docker start oracle-xe'
 
 # Pretty display
@@ -1323,3 +1414,6 @@ shopt -s autocd
 
 # Created by `pipx` on 2026-03-23 13:01:31
 export PATH="$PATH:/home/mattfor/.local/bin"
+
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
