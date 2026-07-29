@@ -98,6 +98,48 @@ cpimgtxt() {
     rm -f "$tmp"
 }
 
+hash() {
+    local alg="sha256"
+
+    usage() {
+        echo "Usage:"
+        echo "  hash [algorithm] <file>"
+        echo "  hash [algorithm] <text...>"
+        echo
+        echo "Available:"
+        echo "  md5 sha1 sha224 sha256 sha384 sha512 b2"
+    }
+
+    [[ $# -eq 0 ]] && {
+        usage
+        return 1
+    }
+
+    case "$1" in
+        md5|sha1|sha224|sha256|sha384|sha512|b2)
+            alg="$1"
+            shift
+            ;;
+    esac
+
+    [[ $# -eq 0 ]] && {
+        usage
+        return 1
+    }
+
+    local cmd
+    case "$alg" in
+        b2) cmd=b2sum ;;
+        *)  cmd="${alg}sum" ;;
+    esac
+
+    if [[ $# -eq 1 && -f "$1" ]]; then
+        "$cmd" -- "$1"
+    else
+        printf '%s' "$*" | "$cmd"
+    fi
+}
+
 topdf() {
     if [ $# -eq 0 ]; then
         echo "Usage: topdf file.odt [file2.odt ...]"
