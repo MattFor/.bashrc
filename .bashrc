@@ -69,7 +69,7 @@ copy() {
   return 1
 }
 
-imgtext() {
+imgtxt() {
     local tmp
     tmp=$(mktemp --suffix=.png)
 
@@ -1335,6 +1335,7 @@ alias m='micro'
 alias rg='rg -p'
 alias nano='micro'
 alias pdf='zathura'
+alias ff='fastfetch'
 alias open='xdg-open'
 alias qr="zbarimg -q --raw"
 
@@ -1350,7 +1351,7 @@ alias lhh='du -sh -- * .[!.]* 2>/dev/null'
 
 alias sandbox='firejail --private=. bash'
 
-# Abandoned
+# Obsolete
 alias prolog="setsid swipl-win & disown"
 alias rundockerdb='docker start oracle-xe'
 
