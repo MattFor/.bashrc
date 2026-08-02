@@ -30,7 +30,11 @@ removeoldkernels() {
 }
 
 update() {
-	sudo xbps-install -Syu
+    sudo xbps-install -Syu || true
+
+    command -v rustup >/dev/null 2>&1 && rustup update || true
+
+    command -v flatpak >/dev/null 2>&1 && flatpak update -y || true
 }
 
 mvp() {
