@@ -1546,3 +1546,5 @@ export PATH="$PATH:/home/mattfor/.local/bin"
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
 export MANPATH="$HOME/.local/share/man:${MANPATH:-}"
+
+eval "$(tracker completion bash)"
