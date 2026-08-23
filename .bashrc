@@ -556,22 +556,31 @@ gitremake() {
     fi
 
     if git show-ref --verify --quiet "refs/heads/$temp_branch"; then
-        echo "Error: temporary branch '$temp_branch' already exists."
-        return 1
+        temp_branch="__gitremake__-$(date +%s)-$RANDOM"
+        while git show-ref --verify --quiet "refs/heads/$temp_branch"; do
+            temp_branch="__gitremake__-$(date +%s)-$RANDOM"
+        done
     fi
 
     echo "Old branch:   $old_branch"
     echo "New branch:   $new_branch"
     echo "Commit:       $message"
-    read -r -p "Continue? [y/N] " confirm
+    echo "Temp branch:  $temp_branch"
 
+    read -r -p "Continue? [y/N] " confirm
     [[ "$confirm" == "y" || "$confirm" == "Y" ]] || return 1
 
     git checkout --orphan "$temp_branch" || return 1
-    git add -A || return 1
-    git commit -m "$message" || return 1
 
-    git branch -D "$old_branch" || return 1
+    git add -A || return 1
+    git commit --no-verify -m "$message" || return 1
+
+    git branch --format='%(refname:short)' |
+        while IFS= read -r branch; do
+            [[ "$branch" == "$temp_branch" ]] && continue
+            git branch -D "$branch" || exit 1
+        done
+
     git branch -m "$new_branch" || return 1
 
     git push --force -u origin "$new_branch"
