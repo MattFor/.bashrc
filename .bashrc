@@ -586,6 +586,32 @@ gitremake() {
     git push --force -u origin "$new_branch"
 }
 
+gitdiff() {
+    local base_commit
+
+    if [ -n "$1" ] && git rev-parse --verify "$1^{commit}" >/dev/null 2>&1; then
+        base_commit="$1"
+        shift
+    else
+        local me
+        me=$(git config user.email)
+
+        if [ -z "$me" ]; then
+            echo "Error: git user.email is not configured." >&2
+            return 1
+        fi
+
+        base_commit=$(git log --author="$me" -n 1 --format="%H" 2>/dev/null)
+
+        if [ -z "$base_commit" ]; then
+            echo "No commits found by $me in current branch history." >&2
+            return 1
+        fi
+    fi
+
+    git diff "$base_commit" HEAD "$@"
+}
+
 gitgraph() {
   if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "Not inside a git repository."
@@ -1459,6 +1485,7 @@ alias ....='z ../../..'
 alias .....='z ../../../..'
 
 alias m='micro'
+alias mm='nvim'
 alias rg='rg -p'
 alias nano='micro'
 alias pdf='zathura'
