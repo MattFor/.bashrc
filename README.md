@@ -26,7 +26,7 @@ Makes life a lot easier.
 `tar, xz, gzip, bzip2, zstd, lz4, zip, rar, 7z, unzip, file`
 
 #### md
-`mdcat, less`
+`glow`
 
 #### activate
 `python3`
