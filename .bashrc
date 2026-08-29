@@ -298,10 +298,14 @@ EOF
 }
 
 md() {
-    if [ -t 0 ]; then
-        mdcat "$@" | less -R
+    local args=("$@")
+
+    [ -t 0 ] || args=(-)
+
+    if [ -t 1 ]; then
+        glow -p "${args[@]}"
     else
-        mdcat | less -R
+        glow "${args[@]}"
     fi
 }
 
@@ -1467,6 +1471,70 @@ cc() {
   printf "%s %s -> %s %s\n" "$amount" "$from" "$result" "$to"
 }
 
+tz() {
+    if [[ $# -ne 3 ]]; then
+        echo "Usage: tz HH:MM FROM_TZ TO_TZ"
+        echo "Example: tz 12:30 BST CEST"
+        return 1
+    fi
+
+    local time="${1,,}"
+    local from="${2^^}"
+    local to="${3^^}"
+    local date_today
+    local from_zone
+    local to_zone
+
+    declare -A zones=(
+        [UTC]="UTC"
+        [GMT]="Europe/London"
+        [BST]="Europe/London"
+        [CET]="Europe/Warsaw"
+        [CEST]="Europe/Warsaw"
+        [WET]="Europe/Lisbon"
+        [WEST]="Europe/Lisbon"
+        [EET]="Europe/Helsinki"
+        [EEST]="Europe/Helsinki"
+
+        [EST]="America/New_York"
+        [EDT]="America/New_York"
+        [CST]="America/Chicago"
+        [CDT]="America/Chicago"
+        [MST]="America/Denver"
+        [MDT]="America/Denver"
+        [PST]="America/Los_Angeles"
+        [PDT]="America/Los_Angeles"
+
+        [JST]="Asia/Tokyo"
+        [KST]="Asia/Seoul"
+        [IST]="Asia/Kolkata"
+        [AEST]="Australia/Sydney"
+        [AEDT]="Australia/Sydney"
+    )
+
+    from_zone="${zones[$from]}"
+    to_zone="${zones[$to]}"
+
+    if [[ -z "$from_zone" ]]; then
+        echo "Unknown source timezone: $from"
+        return 1
+    fi
+
+    if [[ -z "$to_zone" ]]; then
+        echo "Unknown target timezone: $to"
+        return 1
+    fi
+
+    if [[ ! "$time" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
+        echo "Invalid time: $1 (use HH:MM)"
+        return 1
+    fi
+
+    date_today=$(date +%Y-%m-%d)
+
+    TZ="$to_zone" date -d "TZ=\"$from_zone\" $date_today $time" "+$to: %H:%M"
+}
+
 # Keybindings
 bind '"\C-h": backward-kill-word'
 
@@ -1485,8 +1553,9 @@ alias ....='z ../../..'
 alias .....='z ../../../..'
 
 alias r='bat'
-alias ee='nvim'
-alias e='micro'
+alias e='nvim'
+alias m='micro'
+alias ee='micro'
 alias rg='rg -p'
 alias nano='micro'
 alias pdf='zathura'
