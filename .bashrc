@@ -12,21 +12,21 @@ export TERM=xterm-256color
 
 # Load secrets
 if [ -f "$HOME/.config/secrets/env" ]; then
-  source "$HOME/.config/secrets/env"
+    source "$HOME/.config/secrets/env"
 fi
 
 ### System utilities
 
 install() {
-	sudo xbps-install -S "$@"
+    sudo xbps-install -S "$@"
 }
 
 remove() {
-	sudo xbps-remove -R "$@"
+    sudo xbps-remove -R "$@"
 }
 
 removeoldkernels() {
-	sudo vkpurge rm all
+    sudo vkpurge rm all
 }
 
 update() {
@@ -38,46 +38,46 @@ update() {
 }
 
 mvp() {
-	rsync -ah --progress "$@"
+    rsync -ah --progress "$@"
 }
 
 mvpr() {
-	rsync -ah --progress --remove-source-files "$@"
+    rsync -ah --progress --remove-source-files "$@"
 }
 
 reloadcaddy() {
-    sudo caddy fmt --overwrite /etc/caddy/Caddyfile && \
-    sudo caddy validate --config /etc/caddy/Caddyfile && \
-    sudo caddy reload --config /etc/caddy/Caddyfile
+    sudo caddy fmt --overwrite /etc/caddy/Caddyfile \
+        && sudo caddy validate --config /etc/caddy/Caddyfile \
+        && sudo caddy reload --config /etc/caddy/Caddyfile
 }
 
 copy() {
-  if [ ! -t 0 ]; then
-    xclip -selection clipboard -in
-    return $?
-  fi
+    if [ ! -t 0 ]; then
+        xclip -selection clipboard -in
+        return $?
+    fi
 
-  if [ $# -gt 0 ]; then
-    case "${1,,}" in
-      *.png)  xclip -selection clipboard -t image/png  -in "$1" ;;
-      *.jpg|*.jpeg) xclip -selection clipboard -t image/jpeg -in "$1" ;;
-      *.webp) xclip -selection clipboard -t image/webp -in "$1" ;;
-      *) cat "$@" | xclip -selection clipboard -in ;;
-    esac
-    return $?
-  fi
+    if [ $# -gt 0 ]; then
+        case "${1,,}" in
+            *.png) xclip -selection clipboard -t image/png -in "$1" ;;
+            *.jpg | *.jpeg) xclip -selection clipboard -t image/jpeg -in "$1" ;;
+            *.webp) xclip -selection clipboard -t image/webp -in "$1" ;;
+            *) cat "$@" | xclip -selection clipboard -in ;;
+        esac
+        return $?
+    fi
 
-  echo "Usage:"
-  echo "  command | copy"
-  echo "  copy file1 [file2 ...]"
-  return 1
+    echo "Usage:"
+    echo "  command | copy"
+    echo "  copy file1 [file2 ...]"
+    return 1
 }
 
 imgtxt() {
     local tmp
     tmp=$(mktemp --suffix=.png)
 
-    xclip -selection clipboard -t image/png -o > "$tmp" || {
+    xclip -selection clipboard -t image/png -o >"$tmp" || {
         echo "No PNG image found in the clipboard."
         rm -f "$tmp"
         return 1
@@ -91,7 +91,7 @@ cpimgtxt() {
     local tmp
     tmp=$(mktemp --suffix=.png)
 
-    xclip -selection clipboard -t image/png -o > "$tmp" || {
+    xclip -selection clipboard -t image/png -o >"$tmp" || {
         echo "No PNG image found in the clipboard."
         rm -f "$tmp"
         return 1
@@ -120,7 +120,7 @@ hash() {
     }
 
     case "$1" in
-        md5|sha1|sha224|sha256|sha384|sha512|b2)
+        md5 | sha1 | sha224 | sha256 | sha384 | sha512 | b2)
             alg="$1"
             shift
             ;;
@@ -134,7 +134,7 @@ hash() {
     local cmd
     case "$alg" in
         b2) cmd=b2sum ;;
-        *)  cmd="${alg}sum" ;;
+        *) cmd="${alg}sum" ;;
     esac
 
     if [[ $# -eq 1 && -f "$1" ]]; then
@@ -161,12 +161,153 @@ topdf() {
 }
 
 rmexif() {
-  if [[ $# -eq 0 ]]; then
-    echo "Usage: rmexif <file(s)>"
-    return 1
-  fi
+    if [[ $# -eq 0 ]]; then
+        echo "Usage: rmexif <file(s)>"
+        return 1
+    fi
 
-  exiftool -all= -overwrite_original "$@"
+    exiftool -all= -overwrite_original "$@"
+}
+
+_kebab_case() {
+    local name="$1" keep_ext="${2:-0}"
+    local leading ext stem last prev
+
+    leading="${name%%[!.]*}"
+    name="${name#"$leading"}"
+
+    stem="$name"
+    ext=""
+
+    if [[ $keep_ext -ne 0 && "$name" == ?*.* ]]; then
+        last="${name##*.}"
+        if [[ "$last" =~ ^[A-Za-z0-9]{1,8}$ ]]; then
+            ext=".${last}"
+            stem="${name%.*}"
+            prev="${stem##*.}"
+            if [[ "$stem" == ?*.* && "${prev,,}" == "tar" ]]; then
+                ext=".${prev}${ext}"
+                stem="${stem%.*}"
+            fi
+        fi
+    fi
+
+    stem=$(printf '%s' "$stem" | sed -E '
+        :d
+        s#(^|[^0-9._])([0-9]{1,3})[._]([0-9]{1,3})([^0-9]|$)#\1\2/\3\4#
+        td
+        s#([a-z0-9])([A-Z])#\1-\2#g
+        s#([A-Z]+)([A-Z][a-z])#\1-\2#g
+        s#([A-Za-z])([0-9])#\1-\2#g
+        s#([0-9])([A-Za-z])#\1-\2#g
+        s#[^[:alnum:]/]+#-#g
+        s#-+#-#g
+        s#^-##
+        s#-$##
+    ')
+
+    stem="${stem,,}"
+    printf '%s%s%s' "$leading" "${stem//\//.}" "${ext,,}"
+}
+
+kebabify() {
+    local recursive=0 dry=0
+
+    usage() {
+        cat <<'EOF'
+Usage: kebabify [-r] [-n] [path...]
+
+Renames files and directories to kebab-case. With no paths, every non-hidden
+entry in the current directory is renamed.
+
+  -r, --recursive  descend into subdirectories, renaming deepest names first
+  -n, --dry-run    print the renames without performing them
+EOF
+    }
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --recursive) recursive=1 ;;
+            --dry-run) dry=1 ;;
+            --help)
+                usage
+                return 0
+                ;;
+            --)
+                shift
+                break
+                ;;
+            -?*)
+                local flags="${1#-}" i flag
+                for ((i = 0; i < ${#flags}; i++)); do
+                    flag="${flags:i:1}"
+                    case "$flag" in
+                        r) recursive=1 ;;
+                        n) dry=1 ;;
+                        h)
+                            usage
+                            return 0
+                            ;;
+                        *)
+                            printf 'kebabify: unknown option: -%s\n' "$flag" >&2
+                            return 2
+                            ;;
+                    esac
+                done
+                ;;
+            *) break ;;
+        esac
+        shift
+    done
+
+    local -a queue=()
+    if [[ $# -gt 0 ]]; then
+        queue=("$@")
+    else
+        local entry
+        for entry in *; do
+            [[ -e "$entry" || -L "$entry" ]] && queue+=("$entry")
+        done
+    fi
+
+    local -a targets=()
+    local path sub
+    for path in "${queue[@]}"; do
+        if [[ $recursive -eq 1 && -d "$path" && ! -L "$path" ]]; then
+            while IFS= read -r -d '' sub; do
+                targets+=("$sub")
+            done < <(find "$path" -mindepth 1 -depth -not -path '*/.*' -print0)
+        fi
+        targets+=("$path")
+    done
+
+    local -A planned=()
+    local dir base new target
+    for path in "${targets[@]}"; do
+        [[ -e "$path" || -L "$path" ]] || continue
+
+        base="${path##*/}"
+        dir="${path%/*}"
+        [[ "$dir" == "$path" ]] && dir="."
+
+        if [[ -d "$path" && ! -L "$path" ]]; then
+            new=$(_kebab_case "$base")
+        else
+            new=$(_kebab_case "$base" 1)
+        fi
+
+        [[ -z "$new" || "$new" == "$base" ]] && continue
+
+        target="$dir/$new"
+        if [[ -e "$target" || -L "$target" || -n "${planned[$target]:-}" ]]; then
+            printf 'SKIP: "%s" -> "%s" (target already exists)\n' "$path" "$new"
+            continue
+        fi
+        planned["$target"]=1
+
+        printf 'RENAME: "%s" -> "%s"\n' "$path" "$new"
+        [[ $dry -eq 1 ]] || mv -- "$path" "$target"
+    done
 }
 
 compress() {
@@ -207,7 +348,7 @@ EOF
     local out tmp
 
     case "$algo" in
-        xz|best)
+        xz | best)
             if [[ $use_password -eq 1 ]]; then
                 echo "Password protection is not supported for xz archives."
                 return 1
@@ -218,7 +359,7 @@ EOF
             mv -f "$tmp" "$out"
             ;;
 
-        gz|gzip)
+        gz | gzip)
             if [[ $use_password -eq 1 ]]; then
                 echo "Password protection is not supported for gzip archives."
                 return 1
@@ -240,7 +381,7 @@ EOF
             mv -f "$tmp" "$out"
             ;;
 
-        bz2|bzip2)
+        bz2 | bzip2)
             if [[ $use_password -eq 1 ]]; then
                 echo "Password protection is not supported for bzip2 archives."
                 return 1
@@ -337,7 +478,7 @@ peek() {
             return $?
             ;;
 
-        application/vnd.rar|application/x-rar|application/x-rar-compressed)
+        application/vnd.rar | application/x-rar | application/x-rar-compressed)
             if command -v unrar >/dev/null 2>&1; then
                 unrar l -- "$file"
             elif command -v rar >/dev/null 2>&1; then
@@ -359,13 +500,19 @@ peek() {
             return $?
             ;;
 
-        application/gzip|application/x-gzip)
-            tar -tvzf "$file"; return $? ;;
+        application/gzip | application/x-gzip)
+            tar -tvzf "$file"
+            return $?
+            ;;
         application/x-bzip2)
-            tar -tvjf "$file"; return $? ;;
-        application/x-xz|application/x-compress*|application/x-lzip)
-            tar -tvJf "$file"; return $? ;;
-        application/x-lz4|application/lz4)
+            tar -tvjf "$file"
+            return $?
+            ;;
+        application/x-xz | application/x-compress* | application/x-lzip)
+            tar -tvJf "$file"
+            return $?
+            ;;
+        application/x-lz4 | application/lz4)
             if tar --help 2>&1 | grep -q -- '-I '; then
                 tar -I 'lz4 -d -c' -tvf "$file"
             elif command -v lz4 >/dev/null 2>&1; then
@@ -376,7 +523,7 @@ peek() {
             fi
             return $?
             ;;
-        application/x-zstd|application/zstd)
+        application/x-zstd | application/zstd)
             if tar --help 2>&1 | grep -q -- '-I '; then
                 tar -I 'zstd -d -c' -tvf "$file"
             elif command -v zstd >/dev/null 2>&1; then
@@ -388,7 +535,9 @@ peek() {
             return $?
             ;;
         application/x-tar)
-            tar -tvf -- "$file"; return $? ;;
+            tar -tvf -- "$file"
+            return $?
+            ;;
     esac
 
     case "$file" in
@@ -402,25 +551,37 @@ peek() {
                 rar l -- "$file" && return 0
             fi
             ;;
-        *.7z|*.7z.001)
+        *.7z | *.7z.001)
             if command -v 7z >/dev/null 2>&1; then
                 7z l -- "$file" && return 0
             fi
             ;;
-        *.tar.gz|*.tgz) tar -tvzf "$file"; return $? ;;
-        *.tar.bz2|*.tbz2) tar -tvjf "$file"; return $? ;;
-        *.tar.xz|*.txz) tar -tvJf "$file"; return $? ;;
-        *.tar.lz4|*.tlz4)
+        *.tar.gz | *.tgz)
+            tar -tvzf "$file"
+            return $?
+            ;;
+        *.tar.bz2 | *.tbz2)
+            tar -tvjf "$file"
+            return $?
+            ;;
+        *.tar.xz | *.txz)
+            tar -tvJf "$file"
+            return $?
+            ;;
+        *.tar.lz4 | *.tlz4)
             if command -v lz4 >/dev/null 2>&1; then
                 lz4 -d -c -- "$file" | tar -tvf - && return 0
             fi
             ;;
-        *.tar.zst|*.tzst)
+        *.tar.zst | *.tzst)
             if command -v zstd >/dev/null 2>&1; then
                 zstd -d -c -- "$file" | tar -tvf - && return 0
             fi
             ;;
-        *.tar) tar -tvf "$file"; return $? ;;
+        *.tar)
+            tar -tvf "$file"
+            return $?
+            ;;
     esac
 
     printf 'peek: unknown format or missing tools\n' >&2
@@ -430,33 +591,33 @@ peek() {
 ### Programming help
 
 activate() {
-  local venv_dir="${1:-.venv}"
-  local pybin=""
+    local venv_dir="${1:-.venv}"
+    local pybin=""
 
-  if [ ! -d "$venv_dir" ]; then
-    if command -v python3 >/dev/null 2>&1; then
-      pybin="python3"
-    elif command -v python >/dev/null 2>&1; then
-      pybin="python"
-    else
-      echo "No python or python3 found."
-      return 1
+    if [ ! -d "$venv_dir" ]; then
+        if command -v python3 >/dev/null 2>&1; then
+            pybin="python3"
+        elif command -v python >/dev/null 2>&1; then
+            pybin="python"
+        else
+            echo "No python or python3 found."
+            return 1
+        fi
+
+        echo "Creating virtual environment in: $venv_dir"
+        "$pybin" -m venv "$venv_dir" || return 1
     fi
 
-    echo "Creating virtual environment in: $venv_dir"
-    "$pybin" -m venv "$venv_dir" || return 1
-  fi
+    if [ ! -f "$venv_dir/bin/activate" ]; then
+        echo "Found '$venv_dir', but it does not look like a valid venv."
+        return 1
+    fi
 
-  if [ ! -f "$venv_dir/bin/activate" ]; then
-    echo "Found '$venv_dir', but it does not look like a valid venv."
-    return 1
-  fi
-
-  source "$venv_dir/bin/activate"
+    source "$venv_dir/bin/activate"
 }
 
 workon() {
-  activate ".venv"
+    activate ".venv"
 }
 
 minify() {
@@ -579,8 +740,8 @@ gitremake() {
     git add -A || return 1
     git commit --no-verify -m "$message" || return 1
 
-    git branch --format='%(refname:short)' |
-        while IFS= read -r branch; do
+    git branch --format='%(refname:short)' \
+        | while IFS= read -r branch; do
             [[ "$branch" == "$temp_branch" ]] && continue
             git branch -D "$branch" || exit 1
         done
@@ -617,20 +778,20 @@ gitdiff() {
 }
 
 gitgraph() {
-  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo "Not inside a git repository."
-    return 1
-  fi
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "Not inside a git repository."
+        return 1
+    fi
 
-  echo "=== Commit graph ==="
-  git log --graph --decorate=full --all --boundary --date-order \
-    --pretty=format:'%C(auto)%h%Creset %C(bold blue)%d%Creset %s %Cgreen(%cr)%Creset %C(dim white)- %an%Creset' \
-    --abbrev-commit
+    echo "=== Commit graph ==="
+    git log --graph --decorate=full --all --boundary --date-order \
+        --pretty=format:'%C(auto)%h%Creset %C(bold blue)%d%Creset %s %Cgreen(%cr)%Creset %C(dim white)- %an%Creset' \
+        --abbrev-commit
 
-  echo
-  echo "=== Reflog (checkout / branch creation history) ==="
-  git reflog --all --date=relative \
-    --pretty=format:'%C(auto)%h%Creset %C(yellow)%gd%Creset %gs %Cgreen(%cr)%Creset' 2>/dev/null
+    echo
+    echo "=== Reflog (checkout / branch creation history) ==="
+    git reflog --all --date=relative \
+        --pretty=format:'%C(auto)%h%Creset %C(yellow)%gd%Creset %gs %Cgreen(%cr)%Creset' 2>/dev/null
 }
 
 gitrecurse() {
@@ -658,49 +819,55 @@ relaxy-ls() {
 }
 
 _tar_from_stdin() {
-	tar -tvf - 2>/dev/null || { printf 'tpeek: tar failed to read from stdin\n' >&2; return 3; }
+    tar -tvf - 2>/dev/null || {
+        printf 'tpeek: tar failed to read from stdin\n' >&2
+        return 3
+    }
 }
 
 _llm_models() {
-  ollama list 2>/dev/null | awk 'NR > 1 && $1 != "" {print $1}'
+    ollama list 2>/dev/null | awk 'NR > 1 && $1 != "" {print $1}'
 }
 
 _llm_ensure_server() {
-  if ollama list >/dev/null 2>&1; then
-    return 0
-  fi
+    if ollama list >/dev/null 2>&1; then
+        return 0
+    fi
 
-  nohup ollama serve >/tmp/ollama-serve.log 2>&1 &
-  local i
-  for i in $(seq 1 30); do
-    ollama list >/dev/null 2>&1 && return 0
-    sleep 1
-  done
+    nohup ollama serve >/tmp/ollama-serve.log 2>&1 &
+    local i
+    for i in $(seq 1 30); do
+        ollama list >/dev/null 2>&1 && return 0
+        sleep 1
+    done
 
-  echo "ollama server did not start. Check /tmp/ollama-serve.log" >&2
-  return 1
+    echo "ollama server did not start. Check /tmp/ollama-serve.log" >&2
+    return 1
 }
 
 _llm_pick_model() {
-  local query="$1"
-  local models matched
+    local query="$1"
+    local models matched
 
-  models="$(_llm_models)"
-  if [ -z "$models" ]; then
-    return 1
-  fi
-
-  if command -v fzf >/dev/null 2>&1; then
-    if [ -n "$query" ]; then
-      matched="$(printf '%s\n' "$models" | fzf --query "$query" --select-1 --exit-0 2>/dev/null)"
-    else
-      matched="$(printf '%s\n' "$models" | fzf --select-1 --exit-0 2>/dev/null)"
+    models="$(_llm_models)"
+    if [ -z "$models" ]; then
+        return 1
     fi
-    [ -n "$matched" ] && { printf '%s\n' "$matched"; return 0; }
-  fi
 
-  if [ -n "$query" ]; then
-    matched="$(printf '%s\n' "$models" | awk -v q="$query" '
+    if command -v fzf >/dev/null 2>&1; then
+        if [ -n "$query" ]; then
+            matched="$(printf '%s\n' "$models" | fzf --query "$query" --select-1 --exit-0 2>/dev/null)"
+        else
+            matched="$(printf '%s\n' "$models" | fzf --select-1 --exit-0 2>/dev/null)"
+        fi
+        [ -n "$matched" ] && {
+            printf '%s\n' "$matched"
+            return 0
+        }
+    fi
+
+    if [ -n "$query" ]; then
+        matched="$(printf '%s\n' "$models" | awk -v q="$query" '
       BEGIN { ql=tolower(q); best=""; }
       {
         l=tolower($0)
@@ -709,766 +876,776 @@ _llm_pick_model() {
         else if (index(l, ql) > 0 && best == "") best = $0
       }
       END { if (best != "") print best }')"
-    [ -n "$matched" ] && { printf '%s\n' "$matched"; return 0; }
-  fi
+        [ -n "$matched" ] && {
+            printf '%s\n' "$matched"
+            return 0
+        }
+    fi
 
-  return 1
+    return 1
 }
 
 llmon() {
-  local query="$*"
-  local model
-  local models
+    local query="$*"
+    local model
+    local models
 
-  if ! _llm_ensure_server; then
-    return 1
-  fi
+    if ! _llm_ensure_server; then
+        return 1
+    fi
 
-  models="$(_llm_models)"
-  if [ -z "$models" ]; then
-    echo "No models installed yet."
-    echo "Install one with: ollama pull <model>"
-    return 1
-  fi
+    models="$(_llm_models)"
+    if [ -z "$models" ]; then
+        echo "No models installed yet."
+        echo "Install one with: ollama pull <model>"
+        return 1
+    fi
 
-  if [ -z "$query" ]; then
-    echo "Installed models:"
-    printf '  %-32s %s\n' "MODEL" "LAUNCH"
-    printf '  %-32s %s\n' "-----" "------"
-    while IFS= read -r model; do
-      [ -n "$model" ] && printf '  %-32s %s\n' "$model" "ollama run $model"
-    done <<EOF
+    if [ -z "$query" ]; then
+        echo "Installed models:"
+        printf '  %-32s %s\n' "MODEL" "LAUNCH"
+        printf '  %-32s %s\n' "-----" "------"
+        while IFS= read -r model; do
+            [ -n "$model" ] && printf '  %-32s %s\n' "$model" "ollama run $model"
+        done <<EOF
 $models
 EOF
-    echo
-    echo "Use: llmon <part-of-name>"
-    echo "Example: llmon deepseek"
-    return 0
-  fi
+        echo
+        echo "Use: llmon <part-of-name>"
+        echo "Example: llmon deepseek"
+        return 0
+    fi
 
-  model="$(_llm_pick_model "$query")"
-  if [ -z "$model" ]; then
-    echo "No installed model matched: $query" >&2
-    echo
-    echo "Installed models:"
-    printf '%s\n' "$models" | sed 's/^/  - /'
-    return 1
-  fi
+    model="$(_llm_pick_model "$query")"
+    if [ -z "$model" ]; then
+        echo "No installed model matched: $query" >&2
+        echo
+        echo "Installed models:"
+        printf '%s\n' "$models" | sed 's/^/  - /'
+        return 1
+    fi
 
-  echo "Launching: ollama run $model"
-  ollama run "$model"
+    echo "Launching: ollama run $model"
+    ollama run "$model"
 }
 
 llmoff() {
-  local running
+    local running
 
-  running="$(ollama ps 2>/dev/null | awk 'NR > 1 && $1 != "" {print $1}')"
-  if [ -n "$running" ]; then
-    while IFS= read -r model; do
-      [ -n "$model" ] && ollama stop "$model" >/dev/null 2>&1
-    done <<EOF
+    running="$(ollama ps 2>/dev/null | awk 'NR > 1 && $1 != "" {print $1}')"
+    if [ -n "$running" ]; then
+        while IFS= read -r model; do
+            [ -n "$model" ] && ollama stop "$model" >/dev/null 2>&1
+        done <<EOF
 $running
 EOF
-  fi
+    fi
 
-  # Then stop the server.
-  pkill -x ollama >/dev/null 2>&1 || true
+    # Then stop the server.
+    pkill -x ollama >/dev/null 2>&1 || true
 
-  echo "Ollama stopped."
+    echo "Ollama stopped."
 }
 
 c() {
-  if [ $# -eq 0 ]; then
-    echo "Usage: c [v|vv|vvv|sv|svv|svvv|dbg|sdbg] file1.cpp [file2.cpp ...]"
-    return 1
-  fi
+    if [ $# -eq 0 ]; then
+        echo "Usage: c [v|vv|vvv|sv|svv|svvv|dbg|sdbg] file1.cpp [file2.cpp ...]"
+        return 1
+    fi
 
-  search=false
-  verbosity=1
-  dbg=false
+    search=false
+    verbosity=1
+    dbg=false
 
-  token="$1"
-  case "$token" in
-    sdbg|SDBG|Sdbg)
-      search=true; dbg=true; shift ;;
-    dbg|gdb|debug)
-      dbg=true; shift ;;
-    svv|svvv|sv)
-      rest="${token#s}"
-      verbosity=${#rest}
-      search=true
-      shift ;;
-    vvv|vv|v)
-      verbosity=${#token}
-      shift ;;
-    *)
-      if [ -f "$token" ] || [[ "$token" == *.cpp || "$token" == *.cc || "$token" == *.cxx || "$token" == *.c++ ]]; then
-        verbosity=1
-        search=false
-      fi
-      ;;
-  esac
-
-  if [ $# -eq 0 ]; then
-    echo "Error: no source file given."
-    return 1
-  fi
-
-  files=( "$@" )
-  main="${files[0]}"
-  output="${main%.*}"
-
-  std_flag="-std=gnu++26"
-  common_opts=( -pipe )
-
-  driver_verbose=()
-  linker_verbose=()
-  warn_flags=()
-  extra_flags=()
-  sanitizer_flags=()
-  debug_flags=()
-
-  if [ "$dbg" = true ]; then
-    debug_flags=( -g -O0 -ggdb -fno-omit-frame-pointer -rdynamic )
-    warn_flags=( -Wall -Wextra -Wpedantic )
-  else
-    case "$verbosity" in
-      1)
-        warn_flags=( -Wall -Wextra )
-        extra_flags=( -O2 )
-        ;;
-      2)
-        warn_flags=( -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Wformat=2 -Wnull-dereference -Wdouble-promotion )
-        extra_flags=( -O2 -ftemplate-backtrace-limit=0 -fconcepts-diagnostics-depth=10 )
-        ;;
-      3)
-        warn_flags=( -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Wformat=2 -Wnull-dereference -Wdouble-promotion -Wold-style-cast -Wcast-align -Wformat-security -Wredundant-decls -Wlogical-op -Werror )
-        extra_flags=( -O2 -g -ftemplate-backtrace-limit=0 -fconcepts-diagnostics-depth=10 )
-        sanitizer_flags=( -fsanitize=address,undefined -fno-omit-frame-pointer )
-        ;;
-      *)
-        warn_flags=( -Wall -Wextra )
-        extra_flags=( -O2 )
-        ;;
+    token="$1"
+    case "$token" in
+        sdbg | SDBG | Sdbg)
+            search=true
+            dbg=true
+            shift
+            ;;
+        dbg | gdb | debug)
+            dbg=true
+            shift
+            ;;
+        svv | svvv | sv)
+            rest="${token#s}"
+            verbosity=${#rest}
+            search=true
+            shift
+            ;;
+        vvv | vv | v)
+            verbosity=${#token}
+            shift
+            ;;
+        *)
+            if [ -f "$token" ] || [[ "$token" == *.cpp || "$token" == *.cc || "$token" == *.cxx || "$token" == *.c++ ]]; then
+                verbosity=1
+                search=false
+            fi
+            ;;
     esac
-  fi
 
-  if [ "$search" = true ]; then
-    driver_verbose=( -v )
-    linker_verbose=( -Wl,--verbose )
-  fi
+    if [ $# -eq 0 ]; then
+        echo "Error: no source file given."
+        return 1
+    fi
 
-  cmd=( g++ "$std_flag" "${common_opts[@]}" "${warn_flags[@]}" "${extra_flags[@]}" )
+    files=("$@")
+    main="${files[0]}"
+    output="${main%.*}"
 
-  if [ "$dbg" = true ]; then
-    cmd+=( "${debug_flags[@]}" )
-  fi
+    std_flag="-std=gnu++26"
+    common_opts=(-pipe)
 
-  if [ "${#sanitizer_flags[@]}" -ne 0 ] && [ "$dbg" != true ]; then
-    cmd+=( "${sanitizer_flags[@]}" )
-  fi
+    driver_verbose=()
+    linker_verbose=()
+    warn_flags=()
+    extra_flags=()
+    sanitizer_flags=()
+    debug_flags=()
 
-  if [ "${#driver_verbose[@]}" -ne 0 ]; then
-    cmd+=( "${driver_verbose[@]}" )
-  fi
+    if [ "$dbg" = true ]; then
+        debug_flags=(-g -O0 -ggdb -fno-omit-frame-pointer -rdynamic)
+        warn_flags=(-Wall -Wextra -Wpedantic)
+    else
+        case "$verbosity" in
+            1)
+                warn_flags=(-Wall -Wextra)
+                extra_flags=(-O2)
+                ;;
+            2)
+                warn_flags=(-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Wformat=2 -Wnull-dereference -Wdouble-promotion)
+                extra_flags=(-O2 -ftemplate-backtrace-limit=0 -fconcepts-diagnostics-depth=10)
+                ;;
+            3)
+                warn_flags=(-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Wformat=2 -Wnull-dereference -Wdouble-promotion -Wold-style-cast -Wcast-align -Wformat-security -Wredundant-decls -Wlogical-op -Werror)
+                extra_flags=(-O2 -g -ftemplate-backtrace-limit=0 -fconcepts-diagnostics-depth=10)
+                sanitizer_flags=(-fsanitize=address,undefined -fno-omit-frame-pointer)
+                ;;
+            *)
+                warn_flags=(-Wall -Wextra)
+                extra_flags=(-O2)
+                ;;
+        esac
+    fi
 
-  cmd+=( "${files[@]}" )
+    if [ "$search" = true ]; then
+        driver_verbose=(-v)
+        linker_verbose=(-Wl,--verbose)
+    fi
 
-  if [ "${#linker_verbose[@]}" -ne 0 ]; then
-    cmd+=( "${linker_verbose[@]}" )
-  fi
+    cmd=(g++ "$std_flag" "${common_opts[@]}" "${warn_flags[@]}" "${extra_flags[@]}")
 
-  cmd+=( -o "$output" )
+    if [ "$dbg" = true ]; then
+        cmd+=("${debug_flags[@]}")
+    fi
 
-  printf 'Compiling: %s\n' "${cmd[*]}"
-  "${cmd[@]}"
+    if [ "${#sanitizer_flags[@]}" -ne 0 ] && [ "$dbg" != true ]; then
+        cmd+=("${sanitizer_flags[@]}")
+    fi
+
+    if [ "${#driver_verbose[@]}" -ne 0 ]; then
+        cmd+=("${driver_verbose[@]}")
+    fi
+
+    cmd+=("${files[@]}")
+
+    if [ "${#linker_verbose[@]}" -ne 0 ]; then
+        cmd+=("${linker_verbose[@]}")
+    fi
+
+    cmd+=(-o "$output")
+
+    printf 'Compiling: %s\n' "${cmd[*]}"
+    "${cmd[@]}"
 }
 
 rustdoc_search() {
-  for cmd in rg fzf bat w3m; do
-    if ! command -v "$cmd" >/dev/null 2>&1; then
-      printf 'Error: required command not found: %s\n' "$cmd" >&2
-      return 127
-    fi
-  done
-
-  local MODE=""
-  local BROWSER_MODE=0
-  local DOC_BASE TOOLCHAIN
-  local RBE INTRO BOOK REF STD
-  local QUERY lc
-  local DOC_TMPLIST
-  local DOC_SELECTED_LINE DOC_SELECTED_REL DOC_SELECTED_ABS
-
-  if [ "$1" = "i" ]; then
-    BROWSER_MODE=1
-    shift
-  fi
-
-  if [ "$1" = "c" ] || [ "$1" = "cc" ]; then
-    MODE="$1"
-    shift
-
-    if [ -z "$1" ]; then
-      printf 'Usage: rdoc %s <crate-name>\n' "$MODE" >&2
-      return 2
-    fi
-
-    local crate="$1"
-    local docs_url="https://docs.rs/${crate}/latest/"
-    local crates_url="https://crates.io/crates/${crate}"
-
-    if [ "$MODE" = "cc" ]; then
-      if command -v xdg-open >/dev/null 2>&1; then
-        xdg-open "$docs_url" >/dev/null 2>&1 &
-        return 0
-      else
-        w3m "$docs_url" || w3m "$crates_url"
-        return 0
-      fi
-    else
-      if command -v xmllint >/dev/null 2>&1; then
-        local tmp frag
-        tmp="$(mktemp --suffix=.html)" || tmp="/tmp/rdoc.$$"
-        frag="$(mktemp --suffix=.html)" || frag="/tmp/rdoc_frag.$$"
-
-        if curl -Ls "$docs_url" | xmllint --html --xpath '//main' - 2>/dev/null >"$frag"; then
-          {
-            printf '%s\n' '<!doctype html><html><head>'
-            printf '%s\n' "<base href=\"$docs_url\">"
-            printf '%s\n' '</head><body>'
-            cat "$frag"
-            printf '%s\n' '</body></html>'
-          } >"$tmp"
-          w3m -T text/html "$tmp"
-        else
-          curl -Ls "$docs_url" >"$tmp"
-          if command -v perl >/dev/null 2>&1; then
-            perl -0777 -pe "s/(<head[^>]*>)/\$1<base href=\"$docs_url\">/i" "$tmp" >"${tmp}.withbase" && mv "${tmp}.withbase" "$tmp"
-          else
-            sed -E "0,/<head[^>]*>/s//&<base href=\"$docs_url\">/" "$tmp" >"${tmp}.withbase" 2>/dev/null && mv "${tmp}.withbase" "$tmp" || true
-          fi
-          w3m -T text/html "$tmp"
+    for cmd in rg fzf bat w3m; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            printf 'Error: required command not found: %s\n' "$cmd" >&2
+            return 127
         fi
-
-        rm -f "$frag" "$tmp"
-      else
-        w3m "$docs_url"
-      fi
-      return 0
-    fi
-  fi
-
-  TOOLCHAIN="$(rustup show active-toolchain 2>/dev/null | awk '{print $1}' || true)"
-  if [ -n "$TOOLCHAIN" ]; then
-    DOC_BASE="$HOME/.rustup/toolchains/$TOOLCHAIN/share/doc/rust/html"
-  fi
-
-  if [ -z "$DOC_BASE" ] || [ ! -d "$DOC_BASE" ]; then
-    DOC_BASE="$(find "$HOME/.rustup/toolchains" -type d -path '*/share/doc/rust/html' 2>/dev/null | head -n1 || true)"
-  fi
-
-  if [ -z "$DOC_BASE" ] || [ ! -d "$DOC_BASE" ]; then
-    printf 'Rust docs not found under %s. Install with rustup component add rust-docs or point DOC_BASE manually.\n' "$HOME/.rustup/toolchains" >&2
-    return 1
-  fi
-
-  RBE="$DOC_BASE/rust-by-example/index.html"
-  INTRO="$DOC_BASE/rust-by-example/hello.html"
-  BOOK="$DOC_BASE/book/index.html"
-  REF="$DOC_BASE/reference/index.html"
-  STD="$DOC_BASE/std/index.html"
-
-  QUERY="$*"
-  lc="${QUERY,,}"
-
-  if [ -z "$QUERY" ]; then
-    if [ -f "$RBE" ]; then
-      if command -v xdg-open >/dev/null 2>&1; then
-        xdg-open "$RBE" >/dev/null 2>&1 &
-        return 0
-      else
-        w3m "$RBE"
-        return 0
-      fi
-    else
-      printf 'Rust By Example not found at: %s\n' "$RBE" >&2
-      return 1
-    fi
-  fi
-
-  case "$lc" in
-    intro|introduction)
-      if [ -f "$INTRO" ]; then
-        if command -v xdg-open >/dev/null 2>&1; then
-          xdg-open "$INTRO" >/dev/null 2>&1 &
-          return 0
-        else
-          w3m "$INTRO"
-          return 0
-        fi
-      fi
-      ;;
-    book)
-      if [ -f "$BOOK" ]; then
-        if command -v xdg-open >/dev/null 2>&1; then
-          xdg-open "$BOOK" >/dev/null 2>&1 &
-          return 0
-        else
-          w3m "$BOOK"
-          return 0
-        fi
-      fi
-      ;;
-    reference|ref)
-      if [ -f "$REF" ]; then
-        if command -v xdg-open >/dev/null 2>&1; then
-          xdg-open "$REF" >/dev/null 2>&1 &
-          return 0
-        else
-          w3m "$REF"
-          return 0
-        fi
-      fi
-      ;;
-    std|standard|library)
-      if [ -f "$STD" ]; then
-        if command -v xdg-open >/dev/null 2>&1; then
-          xdg-open "$STD" >/dev/null 2>&1 &
-          return 0
-        else
-          w3m "$STD"
-          return 0
-        fi
-      fi
-      ;;
-    by-example|rbe)
-      if [ -f "$RBE" ]; then
-        if command -v xdg-open >/dev/null 2>&1; then
-          xdg-open "$RBE" >/dev/null 2>&1 &
-          return 0
-        else
-          w3m "$RBE"
-          return 0
-        fi
-      fi
-      ;;
-  esac
-
-  local files=()
-  mapfile -t files < <(
-    rg -l --hidden --color=never -S --no-messages \
-      --glob '!.git' --glob '!target' --glob '!**/node_modules/**' \
-      -- "$QUERY" "$DOC_BASE" 2>/dev/null
-  )
-
-  if [ ${#files[@]} -eq 0 ]; then
-    printf 'No matches found in %s for: %s\n' "$DOC_BASE" "$QUERY" >&2
-    return 1
-  fi
-
-  local filtered=()
-  local DOC_ABS_PATH DOC_REL_PATH DOC_SKIP DOC_COMP
-  local IFS
-
-  for DOC_ABS_PATH in "${files[@]}"; do
-    if [ "$DOC_ABS_PATH" = "$DOC_BASE" ]; then
-      DOC_REL_PATH="$(basename "$DOC_ABS_PATH")"
-    else
-      DOC_REL_PATH="${DOC_ABS_PATH#"$DOC_BASE"/}"
-    fi
-
-    DOC_SKIP=0
-    IFS='/'
-    read -r -a DOC_COMPS <<<"$DOC_REL_PATH"
-    for DOC_COMP in "${DOC_COMPS[@]}"; do
-      if [[ "$DOC_COMP" =~ ^[a-z]{2}$ && "$DOC_COMP" != "en" ]]; then
-        DOC_SKIP=1
-        break
-      fi
     done
 
-    if [ "$DOC_SKIP" -eq 0 ]; then
-      filtered+=("$DOC_ABS_PATH")
-    fi
-  done
+    local MODE=""
+    local BROWSER_MODE=0
+    local DOC_BASE TOOLCHAIN
+    local RBE INTRO BOOK REF STD
+    local QUERY lc
+    local DOC_TMPLIST
+    local DOC_SELECTED_LINE DOC_SELECTED_REL DOC_SELECTED_ABS
 
-  if [ ${#filtered[@]} -gt 0 ]; then
-    files=("${filtered[@]}")
-  fi
-
-  if [ ${#files[@]} -eq 0 ]; then
-    printf 'No matches found in %s for: %s\n' "$DOC_BASE" "$QUERY" >&2
-    return 1
-  fi
-
-  DOC_TMPLIST="$(mktemp)" || DOC_TMPLIST="/tmp/rdoc_list.$$"
-
-  local DOC_DISPLAY_PATH
-  for DOC_ABS_PATH in "${files[@]}"; do
-    if [ "$DOC_ABS_PATH" = "$DOC_BASE" ]; then
-      DOC_REL_PATH="$(basename "$DOC_ABS_PATH")"
-    else
-      DOC_REL_PATH="${DOC_ABS_PATH#"$DOC_BASE"/}"
-    fi
-    DOC_DISPLAY_PATH="$DOC_REL_PATH"
-    printf '%s\t%s\n' "$DOC_DISPLAY_PATH" "$DOC_ABS_PATH" >>"$DOC_TMPLIST"
-  done
-
-  rdoc_open_html() {
-    local DOC_OPEN_ABS="$1"
-    local DOC_OPEN_DIR DOC_OPEN_BASE DOC_OPEN_TMP DOC_OPEN_FRAG
-
-    DOC_OPEN_DIR="$(dirname "$DOC_OPEN_ABS")"
-    DOC_OPEN_BASE="file://$DOC_OPEN_DIR/"
-
-    if [ "$BROWSER_MODE" -eq 1 ] && command -v xdg-open >/dev/null 2>&1; then
-      xdg-open "$DOC_OPEN_ABS" >/dev/null 2>&1 &
-      return 0
+    if [ "$1" = "i" ]; then
+        BROWSER_MODE=1
+        shift
     fi
 
-    if ! command -v xmllint >/dev/null 2>&1; then
-      w3m "$DOC_OPEN_ABS"
-      return 0
-    fi
+    if [ "$1" = "c" ] || [ "$1" = "cc" ]; then
+        MODE="$1"
+        shift
 
-    DOC_OPEN_TMP="$(mktemp --suffix=.html)" || DOC_OPEN_TMP="/tmp/rdoc_open.$$"
-    DOC_OPEN_FRAG="$(mktemp --suffix=.html)" || DOC_OPEN_FRAG="/tmp/rdoc_open_frag.$$"
-
-    if xmllint --html --xpath '//main' "$DOC_OPEN_ABS" 2>/dev/null >"$DOC_OPEN_FRAG"; then
-      {
-        printf '%s\n' '<!doctype html><html><head>'
-        printf '%s\n' "<base href=\"$DOC_OPEN_BASE\">"
-        printf '%s\n' '</head><body>'
-        cat "$DOC_OPEN_FRAG"
-        printf '%s\n' '</body></html>'
-      } >"$DOC_OPEN_TMP"
-      w3m -T text/html "$DOC_OPEN_TMP"
-      rm -f "$DOC_OPEN_FRAG" "$DOC_OPEN_TMP"
-      return 0
-    fi
-
-    if xmllint --html --xpath '//article' "$DOC_OPEN_ABS" 2>/dev/null >"$DOC_OPEN_FRAG"; then
-      {
-        printf '%s\n' '<!doctype html><html><head>'
-        printf '%s\n' "<base href=\"$DOC_OPEN_BASE\">"
-        printf '%s\n' '</head><body>'
-        cat "$DOC_OPEN_FRAG"
-        printf '%s\n' '</body></html>'
-      } >"$DOC_OPEN_TMP"
-      w3m -T text/html "$DOC_OPEN_TMP"
-      rm -f "$DOC_OPEN_FRAG" "$DOC_OPEN_TMP"
-      return 0
-    fi
-
-    rm -f "$DOC_OPEN_FRAG" "$DOC_OPEN_TMP"
-    w3m "$DOC_OPEN_ABS"
-  }
-
-  rdoc_preview() {
-    local DOC_PREVIEW_LINE="$1"
-    local DOC_PREVIEW_REL DOC_PREVIEW_ABS DOC_PREVIEW_COLS
-    local DOC_PREVIEW_DIR tmp frag
-
-    IFS=$'\t' read -r DOC_PREVIEW_REL DOC_PREVIEW_ABS <<<"$DOC_PREVIEW_LINE"
-
-    [ -f "$DOC_PREVIEW_ABS" ] || {
-      printf 'file not found: %s\n' "$DOC_PREVIEW_ABS"
-      return 0
-    }
-
-    DOC_PREVIEW_COLS="$(tput cols 2>/dev/null || printf '80')"
-    printf 'Relative: %s\nFull path: %s\n\n' "$DOC_PREVIEW_REL" "$DOC_PREVIEW_ABS"
-
-    case "${DOC_PREVIEW_ABS##*.}" in
-      html|htm)
-        DOC_PREVIEW_DIR="$(dirname "$DOC_PREVIEW_ABS")"
-
-        if command -v xmllint >/dev/null 2>&1; then
-          tmp="$(mktemp --suffix=.html)" || tmp="/tmp/rdoc_preview.$$"
-          frag="$(mktemp --suffix=.html)" || frag="/tmp/rdoc_preview_frag.$$"
-
-          if xmllint --html --xpath '//main' "$DOC_PREVIEW_ABS" 2>/dev/null >"$frag"; then
-            {
-              printf '%s\n' '<!doctype html><html><head>'
-              printf '%s\n' "<base href=\"file://$DOC_PREVIEW_DIR/\">"
-              printf '%s\n' '</head><body>'
-              cat "$frag"
-              printf '%s\n' '</body></html>'
-            } >"$tmp"
-            w3m -dump -T text/html -cols "$DOC_PREVIEW_COLS" "$tmp"
-            rm -f "$frag" "$tmp"
-            return 0
-          fi
-
-          if xmllint --html --xpath '//article' "$DOC_PREVIEW_ABS" 2>/dev/null >"$frag"; then
-            {
-              printf '%s\n' '<!doctype html><html><head>'
-              printf '%s\n' "<base href=\"file://$DOC_PREVIEW_DIR/\">"
-              printf '%s\n' '</head><body>'
-              cat "$frag"
-              printf '%s\n' '</body></html>'
-            } >"$tmp"
-            w3m -dump -T text/html -cols "$DOC_PREVIEW_COLS" "$tmp"
-            rm -f "$frag" "$tmp"
-            return 0
-          fi
-
-          rm -f "$frag" "$tmp"
+        if [ -z "$1" ]; then
+            printf 'Usage: rdoc %s <crate-name>\n' "$MODE" >&2
+            return 2
         fi
 
-        w3m -dump -T text/html -cols "$DOC_PREVIEW_COLS" "$DOC_PREVIEW_ABS"
-        ;;
-      md)
-        bat --paging=never --style=numbers "$DOC_PREVIEW_ABS"
-        ;;
-      *)
-        bat --paging=never --style=plain "$DOC_PREVIEW_ABS"
-        ;;
+        local crate="$1"
+        local docs_url="https://docs.rs/${crate}/latest/"
+        local crates_url="https://crates.io/crates/${crate}"
+
+        if [ "$MODE" = "cc" ]; then
+            if command -v xdg-open >/dev/null 2>&1; then
+                xdg-open "$docs_url" >/dev/null 2>&1 &
+                return 0
+            else
+                w3m "$docs_url" || w3m "$crates_url"
+                return 0
+            fi
+        else
+            if command -v xmllint >/dev/null 2>&1; then
+                local tmp frag
+                tmp="$(mktemp --suffix=.html)" || tmp="/tmp/rdoc.$$"
+                frag="$(mktemp --suffix=.html)" || frag="/tmp/rdoc_frag.$$"
+
+                if curl -Ls "$docs_url" | xmllint --html --xpath '//main' - 2>/dev/null >"$frag"; then
+                    {
+                        printf '%s\n' '<!doctype html><html><head>'
+                        printf '%s\n' "<base href=\"$docs_url\">"
+                        printf '%s\n' '</head><body>'
+                        cat "$frag"
+                        printf '%s\n' '</body></html>'
+                    } >"$tmp"
+                    w3m -T text/html "$tmp"
+                else
+                    curl -Ls "$docs_url" >"$tmp"
+                    if command -v perl >/dev/null 2>&1; then
+                        perl -0777 -pe "s/(<head[^>]*>)/\$1<base href=\"$docs_url\">/i" "$tmp" >"${tmp}.withbase" && mv "${tmp}.withbase" "$tmp"
+                    else
+                        sed -E "0,/<head[^>]*>/s//&<base href=\"$docs_url\">/" "$tmp" >"${tmp}.withbase" 2>/dev/null && mv "${tmp}.withbase" "$tmp" || true
+                    fi
+                    w3m -T text/html "$tmp"
+                fi
+
+                rm -f "$frag" "$tmp"
+            else
+                w3m "$docs_url"
+            fi
+            return 0
+        fi
+    fi
+
+    TOOLCHAIN="$(rustup show active-toolchain 2>/dev/null | awk '{print $1}' || true)"
+    if [ -n "$TOOLCHAIN" ]; then
+        DOC_BASE="$HOME/.rustup/toolchains/$TOOLCHAIN/share/doc/rust/html"
+    fi
+
+    if [ -z "$DOC_BASE" ] || [ ! -d "$DOC_BASE" ]; then
+        DOC_BASE="$(find "$HOME/.rustup/toolchains" -type d -path '*/share/doc/rust/html' 2>/dev/null | head -n1 || true)"
+    fi
+
+    if [ -z "$DOC_BASE" ] || [ ! -d "$DOC_BASE" ]; then
+        printf 'Rust docs not found under %s. Install with rustup component add rust-docs or point DOC_BASE manually.\n' "$HOME/.rustup/toolchains" >&2
+        return 1
+    fi
+
+    RBE="$DOC_BASE/rust-by-example/index.html"
+    INTRO="$DOC_BASE/rust-by-example/hello.html"
+    BOOK="$DOC_BASE/book/index.html"
+    REF="$DOC_BASE/reference/index.html"
+    STD="$DOC_BASE/std/index.html"
+
+    QUERY="$*"
+    lc="${QUERY,,}"
+
+    if [ -z "$QUERY" ]; then
+        if [ -f "$RBE" ]; then
+            if command -v xdg-open >/dev/null 2>&1; then
+                xdg-open "$RBE" >/dev/null 2>&1 &
+                return 0
+            else
+                w3m "$RBE"
+                return 0
+            fi
+        else
+            printf 'Rust By Example not found at: %s\n' "$RBE" >&2
+            return 1
+        fi
+    fi
+
+    case "$lc" in
+        intro | introduction)
+            if [ -f "$INTRO" ]; then
+                if command -v xdg-open >/dev/null 2>&1; then
+                    xdg-open "$INTRO" >/dev/null 2>&1 &
+                    return 0
+                else
+                    w3m "$INTRO"
+                    return 0
+                fi
+            fi
+            ;;
+        book)
+            if [ -f "$BOOK" ]; then
+                if command -v xdg-open >/dev/null 2>&1; then
+                    xdg-open "$BOOK" >/dev/null 2>&1 &
+                    return 0
+                else
+                    w3m "$BOOK"
+                    return 0
+                fi
+            fi
+            ;;
+        reference | ref)
+            if [ -f "$REF" ]; then
+                if command -v xdg-open >/dev/null 2>&1; then
+                    xdg-open "$REF" >/dev/null 2>&1 &
+                    return 0
+                else
+                    w3m "$REF"
+                    return 0
+                fi
+            fi
+            ;;
+        std | standard | library)
+            if [ -f "$STD" ]; then
+                if command -v xdg-open >/dev/null 2>&1; then
+                    xdg-open "$STD" >/dev/null 2>&1 &
+                    return 0
+                else
+                    w3m "$STD"
+                    return 0
+                fi
+            fi
+            ;;
+        by-example | rbe)
+            if [ -f "$RBE" ]; then
+                if command -v xdg-open >/dev/null 2>&1; then
+                    xdg-open "$RBE" >/dev/null 2>&1 &
+                    return 0
+                else
+                    w3m "$RBE"
+                    return 0
+                fi
+            fi
+            ;;
     esac
-  }
 
-  export -f rdoc_preview rdoc_open_html 2>/dev/null || true
+    local files=()
+    mapfile -t files < <(
+        rg -l --hidden --color=never -S --no-messages \
+            --glob '!.git' --glob '!target' --glob '!**/node_modules/**' \
+            -- "$QUERY" "$DOC_BASE" 2>/dev/null
+    )
 
-  DOC_SELECTED_LINE=$(
-    fzf --prompt="RustDocs> " \
-        --header="Base: $DOC_BASE  (Enter opens the file)" \
-        --delimiter=$'\t' \
-        --with-nth=1 \
-        --preview-window='right:75%,wrap' \
-        --preview 'bash -lc '\''rdoc_preview "$1"'\'' bash {}' \
-        < "$DOC_TMPLIST"
-  )
+    if [ ${#files[@]} -eq 0 ]; then
+        printf 'No matches found in %s for: %s\n' "$DOC_BASE" "$QUERY" >&2
+        return 1
+    fi
 
-  rm -f "$DOC_TMPLIST"
+    local filtered=()
+    local DOC_ABS_PATH DOC_REL_PATH DOC_SKIP DOC_COMP
+    local IFS
 
-  if [ -z "$DOC_SELECTED_LINE" ]; then
-    return 130
-  fi
+    for DOC_ABS_PATH in "${files[@]}"; do
+        if [ "$DOC_ABS_PATH" = "$DOC_BASE" ]; then
+            DOC_REL_PATH="$(basename "$DOC_ABS_PATH")"
+        else
+            DOC_REL_PATH="${DOC_ABS_PATH#"$DOC_BASE"/}"
+        fi
 
-  IFS=$'\t' read -r DOC_SELECTED_REL DOC_SELECTED_ABS <<<"$DOC_SELECTED_LINE"
+        DOC_SKIP=0
+        IFS='/'
+        read -r -a DOC_COMPS <<<"$DOC_REL_PATH"
+        for DOC_COMP in "${DOC_COMPS[@]}"; do
+            if [[ "$DOC_COMP" =~ ^[a-z]{2}$ && "$DOC_COMP" != "en" ]]; then
+                DOC_SKIP=1
+                break
+            fi
+        done
 
-  if [ -z "$DOC_SELECTED_ABS" ] || [ ! -f "$DOC_SELECTED_ABS" ]; then
-    printf 'Selected file missing or invalid: %s\n' "$DOC_SELECTED_ABS" >&2
-    return 1
-  fi
+        if [ "$DOC_SKIP" -eq 0 ]; then
+            filtered+=("$DOC_ABS_PATH")
+        fi
+    done
 
-  case "${DOC_SELECTED_ABS##*.}" in
-    html|htm)
-      rdoc_open_html "$DOC_SELECTED_ABS"
-      ;;
-    md)
-      bat --paging=always --style=numbers "$DOC_SELECTED_ABS"
-      ;;
-    *)
-      if [ -n "$PAGER" ]; then
-        "$PAGER" "$DOC_SELECTED_ABS"
-      else
-        less -R "$DOC_SELECTED_ABS"
-      fi
-      ;;
-  esac
+    if [ ${#filtered[@]} -gt 0 ]; then
+        files=("${filtered[@]}")
+    fi
 
-  return 0
+    if [ ${#files[@]} -eq 0 ]; then
+        printf 'No matches found in %s for: %s\n' "$DOC_BASE" "$QUERY" >&2
+        return 1
+    fi
+
+    DOC_TMPLIST="$(mktemp)" || DOC_TMPLIST="/tmp/rdoc_list.$$"
+
+    local DOC_DISPLAY_PATH
+    for DOC_ABS_PATH in "${files[@]}"; do
+        if [ "$DOC_ABS_PATH" = "$DOC_BASE" ]; then
+            DOC_REL_PATH="$(basename "$DOC_ABS_PATH")"
+        else
+            DOC_REL_PATH="${DOC_ABS_PATH#"$DOC_BASE"/}"
+        fi
+        DOC_DISPLAY_PATH="$DOC_REL_PATH"
+        printf '%s\t%s\n' "$DOC_DISPLAY_PATH" "$DOC_ABS_PATH" >>"$DOC_TMPLIST"
+    done
+
+    rdoc_open_html() {
+        local DOC_OPEN_ABS="$1"
+        local DOC_OPEN_DIR DOC_OPEN_BASE DOC_OPEN_TMP DOC_OPEN_FRAG
+
+        DOC_OPEN_DIR="$(dirname "$DOC_OPEN_ABS")"
+        DOC_OPEN_BASE="file://$DOC_OPEN_DIR/"
+
+        if [ "$BROWSER_MODE" -eq 1 ] && command -v xdg-open >/dev/null 2>&1; then
+            xdg-open "$DOC_OPEN_ABS" >/dev/null 2>&1 &
+            return 0
+        fi
+
+        if ! command -v xmllint >/dev/null 2>&1; then
+            w3m "$DOC_OPEN_ABS"
+            return 0
+        fi
+
+        DOC_OPEN_TMP="$(mktemp --suffix=.html)" || DOC_OPEN_TMP="/tmp/rdoc_open.$$"
+        DOC_OPEN_FRAG="$(mktemp --suffix=.html)" || DOC_OPEN_FRAG="/tmp/rdoc_open_frag.$$"
+
+        if xmllint --html --xpath '//main' "$DOC_OPEN_ABS" 2>/dev/null >"$DOC_OPEN_FRAG"; then
+            {
+                printf '%s\n' '<!doctype html><html><head>'
+                printf '%s\n' "<base href=\"$DOC_OPEN_BASE\">"
+                printf '%s\n' '</head><body>'
+                cat "$DOC_OPEN_FRAG"
+                printf '%s\n' '</body></html>'
+            } >"$DOC_OPEN_TMP"
+            w3m -T text/html "$DOC_OPEN_TMP"
+            rm -f "$DOC_OPEN_FRAG" "$DOC_OPEN_TMP"
+            return 0
+        fi
+
+        if xmllint --html --xpath '//article' "$DOC_OPEN_ABS" 2>/dev/null >"$DOC_OPEN_FRAG"; then
+            {
+                printf '%s\n' '<!doctype html><html><head>'
+                printf '%s\n' "<base href=\"$DOC_OPEN_BASE\">"
+                printf '%s\n' '</head><body>'
+                cat "$DOC_OPEN_FRAG"
+                printf '%s\n' '</body></html>'
+            } >"$DOC_OPEN_TMP"
+            w3m -T text/html "$DOC_OPEN_TMP"
+            rm -f "$DOC_OPEN_FRAG" "$DOC_OPEN_TMP"
+            return 0
+        fi
+
+        rm -f "$DOC_OPEN_FRAG" "$DOC_OPEN_TMP"
+        w3m "$DOC_OPEN_ABS"
+    }
+
+    rdoc_preview() {
+        local DOC_PREVIEW_LINE="$1"
+        local DOC_PREVIEW_REL DOC_PREVIEW_ABS DOC_PREVIEW_COLS
+        local DOC_PREVIEW_DIR tmp frag
+
+        IFS=$'\t' read -r DOC_PREVIEW_REL DOC_PREVIEW_ABS <<<"$DOC_PREVIEW_LINE"
+
+        [ -f "$DOC_PREVIEW_ABS" ] || {
+            printf 'file not found: %s\n' "$DOC_PREVIEW_ABS"
+            return 0
+        }
+
+        DOC_PREVIEW_COLS="$(tput cols 2>/dev/null || printf '80')"
+        printf 'Relative: %s\nFull path: %s\n\n' "$DOC_PREVIEW_REL" "$DOC_PREVIEW_ABS"
+
+        case "${DOC_PREVIEW_ABS##*.}" in
+            html | htm)
+                DOC_PREVIEW_DIR="$(dirname "$DOC_PREVIEW_ABS")"
+
+                if command -v xmllint >/dev/null 2>&1; then
+                    tmp="$(mktemp --suffix=.html)" || tmp="/tmp/rdoc_preview.$$"
+                    frag="$(mktemp --suffix=.html)" || frag="/tmp/rdoc_preview_frag.$$"
+
+                    if xmllint --html --xpath '//main' "$DOC_PREVIEW_ABS" 2>/dev/null >"$frag"; then
+                        {
+                            printf '%s\n' '<!doctype html><html><head>'
+                            printf '%s\n' "<base href=\"file://$DOC_PREVIEW_DIR/\">"
+                            printf '%s\n' '</head><body>'
+                            cat "$frag"
+                            printf '%s\n' '</body></html>'
+                        } >"$tmp"
+                        w3m -dump -T text/html -cols "$DOC_PREVIEW_COLS" "$tmp"
+                        rm -f "$frag" "$tmp"
+                        return 0
+                    fi
+
+                    if xmllint --html --xpath '//article' "$DOC_PREVIEW_ABS" 2>/dev/null >"$frag"; then
+                        {
+                            printf '%s\n' '<!doctype html><html><head>'
+                            printf '%s\n' "<base href=\"file://$DOC_PREVIEW_DIR/\">"
+                            printf '%s\n' '</head><body>'
+                            cat "$frag"
+                            printf '%s\n' '</body></html>'
+                        } >"$tmp"
+                        w3m -dump -T text/html -cols "$DOC_PREVIEW_COLS" "$tmp"
+                        rm -f "$frag" "$tmp"
+                        return 0
+                    fi
+
+                    rm -f "$frag" "$tmp"
+                fi
+
+                w3m -dump -T text/html -cols "$DOC_PREVIEW_COLS" "$DOC_PREVIEW_ABS"
+                ;;
+            md)
+                bat --paging=never --style=numbers "$DOC_PREVIEW_ABS"
+                ;;
+            *)
+                bat --paging=never --style=plain "$DOC_PREVIEW_ABS"
+                ;;
+        esac
+    }
+
+    export -f rdoc_preview rdoc_open_html 2>/dev/null || true
+
+    DOC_SELECTED_LINE=$(
+        fzf --prompt="RustDocs> " \
+            --header="Base: $DOC_BASE  (Enter opens the file)" \
+            --delimiter=$'\t' \
+            --with-nth=1 \
+            --preview-window='right:75%,wrap' \
+            --preview 'bash -lc '\''rdoc_preview "$1"'\'' bash {}' \
+            <"$DOC_TMPLIST"
+    )
+
+    rm -f "$DOC_TMPLIST"
+
+    if [ -z "$DOC_SELECTED_LINE" ]; then
+        return 130
+    fi
+
+    IFS=$'\t' read -r DOC_SELECTED_REL DOC_SELECTED_ABS <<<"$DOC_SELECTED_LINE"
+
+    if [ -z "$DOC_SELECTED_ABS" ] || [ ! -f "$DOC_SELECTED_ABS" ]; then
+        printf 'Selected file missing or invalid: %s\n' "$DOC_SELECTED_ABS" >&2
+        return 1
+    fi
+
+    case "${DOC_SELECTED_ABS##*.}" in
+        html | htm)
+            rdoc_open_html "$DOC_SELECTED_ABS"
+            ;;
+        md)
+            bat --paging=always --style=numbers "$DOC_SELECTED_ABS"
+            ;;
+        *)
+            if [ -n "$PAGER" ]; then
+                "$PAGER" "$DOC_SELECTED_ABS"
+            else
+                less -R "$DOC_SELECTED_ABS"
+            fi
+            ;;
+    esac
+
+    return 0
 }
 
 alias rdoc='rustdoc_search'
 
 dockeron() {
-  if [ -d /etc/sv/docker ] && [ ! -e /var/service/docker ]; then
-    sudo ln -s /etc/sv/docker /var/service/ || true
-  fi
+    if [ -d /etc/sv/docker ] && [ ! -e /var/service/docker ]; then
+        sudo ln -s /etc/sv/docker /var/service/ || true
+    fi
 
-  echo "Starting Docker service..."
-  sudo sv up docker || true
+    echo "Starting Docker service..."
+    sudo sv up docker || true
 
-  echo "dockeron: Docker started and enabled on boot."
+    echo "dockeron: Docker started and enabled on boot."
 }
 
 dockeroff() {
-  echo "Stopping Docker service..."
+    echo "Stopping Docker service..."
 
-  if command -v docker >/dev/null 2>&1; then
-    sudo docker ps -q | xargs -r sudo docker stop
-  fi
+    if command -v docker >/dev/null 2>&1; then
+        sudo docker ps -q | xargs -r sudo docker stop
+    fi
 
-  if [ -e /var/service/docker ]; then
-    sudo sv down docker || true
-    sudo rm -f /var/service/docker
-  fi
+    if [ -e /var/service/docker ]; then
+        sudo sv down docker || true
+        sudo rm -f /var/service/docker
+    fi
 
-  echo "dockeroff: Docker stopped and disabled from startup."
+    echo "dockeroff: Docker stopped and disabled from startup."
 }
 
 ### Bluetooth
 
 btup() {
-  if [ -d /etc/sv/dbus ] && [ ! -e /var/service/dbus ]; then
-    sudo ln -s /etc/sv/dbus /var/service/ || true
-  fi
-  if [ -d /etc/sv/bluetoothd ] && [ ! -e /var/service/bluetoothd ]; then
-    sudo ln -s /etc/sv/bluetoothd /var/service/ || true
-  fi
+    if [ -d /etc/sv/dbus ] && [ ! -e /var/service/dbus ]; then
+        sudo ln -s /etc/sv/dbus /var/service/ || true
+    fi
+    if [ -d /etc/sv/bluetoothd ] && [ ! -e /var/service/bluetoothd ]; then
+        sudo ln -s /etc/sv/bluetoothd /var/service/ || true
+    fi
 
-  echo "Starting dbus and bluetoothd..."
-  if [ -e /var/service/dbus ]; then sudo sv up dbus || true; fi
-  if [ -e /var/service/bluetoothd ]; then sudo sv up bluetoothd || true; fi
+    echo "Starting dbus and bluetoothd..."
+    if [ -e /var/service/dbus ]; then sudo sv up dbus || true; fi
+    if [ -e /var/service/bluetoothd ]; then sudo sv up bluetoothd || true; fi
 
-  # unblock and power on
-  command -v rfkill >/dev/null 2>&1 && sudo rfkill unblock bluetooth || true
-  if command -v bluetoothctl >/dev/null 2>&1; then
-    printf 'power on\nagent on\ndefault-agent\nquit\n' | sudo bluetoothctl >/dev/null 2>&1 || true
-  fi
-  command -v hciconfig >/dev/null 2>&1 && sudo hciconfig hci0 up >/dev/null 2>&1 || true
+    # unblock and power on
+    command -v rfkill >/dev/null 2>&1 && sudo rfkill unblock bluetooth || true
+    if command -v bluetoothctl >/dev/null 2>&1; then
+        printf 'power on\nagent on\ndefault-agent\nquit\n' | sudo bluetoothctl >/dev/null 2>&1 || true
+    fi
+    command -v hciconfig >/dev/null 2>&1 && sudo hciconfig hci0 up >/dev/null 2>&1 || true
 
-  echo "btup: started bluetoothd and requested adapter power-on."
-  echo "Use 'bluetoothctl' to pair/connect (or Blueman for GUI)."
+    echo "btup: started bluetoothd and requested adapter power-on."
+    echo "Use 'bluetoothctl' to pair/connect (or Blueman for GUI)."
 }
 
 btdown() {
-  echo "Powering down bluetooth..."
+    echo "Powering down bluetooth..."
 
-  if sv status bluetoothd 2>/dev/null | grep -q run; then
-    printf 'disconnect\npower off\nquit\n' | sudo bluetoothctl --timeout 3 >/dev/null 2>&1 || true
-  fi
+    if sv status bluetoothd 2>/dev/null | grep -q run; then
+        printf 'disconnect\npower off\nquit\n' | sudo bluetoothctl --timeout 3 >/dev/null 2>&1 || true
+    fi
 
-  if ip link show hci0 >/dev/null 2>&1; then
-    sudo hciconfig hci0 down >/dev/null 2>&1 || true
-  fi
+    if ip link show hci0 >/dev/null 2>&1; then
+        sudo hciconfig hci0 down >/dev/null 2>&1 || true
+    fi
 
-  command -v rfkill >/dev/null 2>&1 && sudo rfkill block bluetooth || true
+    command -v rfkill >/dev/null 2>&1 && sudo rfkill block bluetooth || true
 
-  if [ -e /var/service/bluetoothd ]; then
-    sudo sv down bluetoothd || true
-    sudo rm -f /var/service/bluetoothd
-  fi
+    if [ -e /var/service/bluetoothd ]; then
+        sudo sv down bluetoothd || true
+        sudo rm -f /var/service/bluetoothd
+    fi
 
-  echo "btdown: bluetooth powered off, service stopped, and disabled."
+    echo "btdown: bluetooth powered off, service stopped, and disabled."
 }
 
 ### Virtualisation utilties
 
 virtup() {
-  for svc in libvirtd virtlogd virtlockd; do
-    if [ -d "/etc/sv/$svc" ] && [ ! -e "/var/service/$svc" ]; then
-      sudo ln -s "/etc/sv/$svc" /var/service/ || true
+    for svc in libvirtd virtlogd virtlockd; do
+        if [ -d "/etc/sv/$svc" ] && [ ! -e "/var/service/$svc" ]; then
+            sudo ln -s "/etc/sv/$svc" /var/service/ || true
+        fi
+    done
+
+    echo "Ensuring /run/libvirt exists..."
+    sudo mkdir -p /run/libvirt || true
+    sudo chown root:root /run/libvirt || true
+
+    if [ -e /var/service/libvirtd ]; then
+        echo "Starting libvirtd (runit)..."
+        sudo sv up libvirtd || true
+    else
+        echo "libvirtd runit service missing — attempting to start libvirtd daemon..."
+        command -v libvirtd >/dev/null 2>&1 && sudo libvirtd --daemon || true
     fi
-  done
 
-  echo "Ensuring /run/libvirt exists..."
-  sudo mkdir -p /run/libvirt || true
-  sudo chown root:root /run/libvirt || true
-
-  if [ -e /var/service/libvirtd ]; then
-    echo "Starting libvirtd (runit)..."
-    sudo sv up libvirtd || true
-  else
-    echo "libvirtd runit service missing — attempting to start libvirtd daemon..."
-    command -v libvirtd >/dev/null 2>&1 && sudo libvirtd --daemon || true
-  fi
-
-  if [ -e /var/service/virtlogd ]; then
-    echo "Starting virtlogd (runit)..."
-    sudo sv up virtlogd || true
-  else
-    echo "virtlogd runit service missing — attempting to start virtlogd daemon..."
-    if command -v virtlogd >/dev/null 2>&1; then
-      sudo virtlogd --daemon || true
-    elif [ -x /usr/sbin/virtlogd ]; then
-      sudo /usr/sbin/virtlogd --daemon || true
+    if [ -e /var/service/virtlogd ]; then
+        echo "Starting virtlogd (runit)..."
+        sudo sv up virtlogd || true
+    else
+        echo "virtlogd runit service missing — attempting to start virtlogd daemon..."
+        if command -v virtlogd >/dev/null 2>&1; then
+            sudo virtlogd --daemon || true
+        elif [ -x /usr/sbin/virtlogd ]; then
+            sudo /usr/sbin/virtlogd --daemon || true
+        fi
     fi
-  fi
 
-  if [ -e /var/service/virtlockd ]; then
-    echo "Starting virtlockd (runit)..."
-    sudo sv up virtlockd || true
-  else
-    if command -v virtlockd >/dev/null 2>&1; then
-      echo "virtlockd runit service missing — attempting to start virtlockd daemon..."
-      sudo virtlockd --daemon || true
+    if [ -e /var/service/virtlockd ]; then
+        echo "Starting virtlockd (runit)..."
+        sudo sv up virtlockd || true
+    else
+        if command -v virtlockd >/dev/null 2>&1; then
+            echo "virtlockd runit service missing — attempting to start virtlockd daemon..."
+            sudo virtlockd --daemon || true
+        fi
     fi
-  fi
 
-  sleep 1.5
+    sleep 1.5
 
-  echo "Sockets:"
-  ls -l /run/libvirt 2>/dev/null || true
-  [ -e /run/libvirt/virtlogd-sock ] && echo " - virtlogd-sock present" || echo " - virtlogd-sock missing"
-  [ -e /run/libvirt/libvirt-sock ] && echo " - libvirt-sock present" || echo " - libvirt-sock missing"
+    echo "Sockets:"
+    ls -l /run/libvirt 2>/dev/null || true
+    [ -e /run/libvirt/virtlogd-sock ] && echo " - virtlogd-sock present" || echo " - virtlogd-sock missing"
+    [ -e /run/libvirt/libvirt-sock ] && echo " - libvirt-sock present" || echo " - libvirt-sock missing"
 
-  # Quick verification
-  if command -v virsh >/dev/null 2>&1; then
-    echo "virsh connection test:"
-    virsh -c qemu:///system list --all || true
-  fi
+    # Quick verification
+    if command -v virsh >/dev/null 2>&1; then
+        echo "virsh connection test:"
+        virsh -c qemu:///system list --all || true
+    fi
 
-  echo "virtup: done. If virt-manager previously complained, retry it now."
+    echo "virtup: done. If virt-manager previously complained, retry it now."
 }
 
 virtdown() {
-  echo "Stopping libvirt services..."
+    echo "Stopping libvirt services..."
 
-  if [ -e /var/service/virtlockd ]; then
-    sudo sv down virtlockd || true
-    sudo rm -f /var/service/virtlockd || true
-  fi
-
-  if [ -e /var/service/virtlogd ]; then
-    sudo sv down virtlogd || true
-    sudo rm -f /var/service/virtlogd || true
-  else
-    # fallback: kill daemon if running
-    if pgrep -x virtlogd >/dev/null 2>&1; then
-      sudo pkill -f virtlogd || true
+    if [ -e /var/service/virtlockd ]; then
+        sudo sv down virtlockd || true
+        sudo rm -f /var/service/virtlockd || true
     fi
-  fi
 
-  if [ -e /var/service/libvirtd ]; then
-    sudo sv down libvirtd || true
-    sudo rm -f /var/service/libvirtd || true
-  else
-    if pgrep -x libvirtd >/dev/null 2>&1; then
-      sudo pkill -f libvirtd || true
+    if [ -e /var/service/virtlogd ]; then
+        sudo sv down virtlogd || true
+        sudo rm -f /var/service/virtlogd || true
+    else
+        # fallback: kill daemon if running
+        if pgrep -x virtlogd >/dev/null 2>&1; then
+            sudo pkill -f virtlogd || true
+        fi
     fi
-  fi
 
-  sudo rm -f /run/libvirt/virtlogd-sock 2>/dev/null || true
-  sudo rm -f /run/libvirt/libvirt-sock 2>/dev/null || true
+    if [ -e /var/service/libvirtd ]; then
+        sudo sv down libvirtd || true
+        sudo rm -f /var/service/libvirtd || true
+    else
+        if pgrep -x libvirtd >/dev/null 2>&1; then
+            sudo pkill -f libvirtd || true
+        fi
+    fi
 
-  echo "virtdown: libvirt services stopped and disabled from autostart (runit symlinks removed)."
-  echo "If you want services disabled but not removed, remove the 'rm -f /var/service/...' lines above."
+    sudo rm -f /run/libvirt/virtlogd-sock 2>/dev/null || true
+    sudo rm -f /run/libvirt/libvirt-sock 2>/dev/null || true
+
+    echo "virtdown: libvirt services stopped and disabled from autostart (runit symlinks removed)."
+    echo "If you want services disabled but not removed, remove the 'rm -f /var/service/...' lines above."
 }
 
 ### Other useful commands
 
 cc() {
-  if [[ $# -ne 3 ]]; then
-    echo "Usage: cc <amount> <from_currency> <to_currency>" >&2
-    return 1
-  fi
+    if [[ $# -ne 3 ]]; then
+        echo "Usage: cc <amount> <from_currency> <to_currency>" >&2
+        return 1
+    fi
 
-  local amount="$1"
-  local from="${2^^}"
-  local to="${3^^}"
-  local response rate result
+    local amount="$1"
+    local from="${2^^}"
+    local to="${3^^}"
+    local response rate result
 
-  if ! [[ "$amount" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-    echo "Error: amount must be a positive number" >&2
-    return 1
-  fi
+    if ! [[ "$amount" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        echo "Error: amount must be a positive number" >&2
+        return 1
+    fi
 
-  response="$(curl -fsS "https://api.frankfurter.dev/v2/rate/$from/$to")" || {
-    echo "Error: API request failed" >&2
-    return 1
-  }
+    response="$(curl -fsS "https://api.frankfurter.dev/v2/rate/$from/$to")" || {
+        echo "Error: API request failed" >&2
+        return 1
+    }
 
-  rate="$(jq -er '.rate' <<<"$response")" || {
-    echo "Error: unexpected API response" >&2
-    return 1
-  }
+    rate="$(jq -er '.rate' <<<"$response")" || {
+        echo "Error: unexpected API response" >&2
+        return 1
+    }
 
-  result="$(awk -v amount="$amount" -v rate="$rate" 'BEGIN { printf "%.2f", amount * rate }')"
-  printf "%s %s -> %s %s\n" "$amount" "$from" "$result" "$to"
+    result="$(awk -v amount="$amount" -v rate="$rate" 'BEGIN { printf "%.2f", amount * rate }')"
+    printf "%s %s -> %s %s\n" "$amount" "$from" "$result" "$to"
 }
 
 tz() {
@@ -1581,25 +1758,25 @@ alias rundockerdb='docker start oracle-xe'
 
 # Pretty display
 if command -v dircolors >/dev/null 2>&1; then
-  eval "$(dircolors -b)"
+    eval "$(dircolors -b)"
 fi
 
 _short_path() {
-  local pwd="$PWD"
-  if [[ "$pwd" == "$HOME"* ]]; then
-    pwd="~${pwd#$HOME}"
-  fi
+    local pwd="$PWD"
+    if [[ "$pwd" == "$HOME"* ]]; then
+        pwd="~${pwd#$HOME}"
+    fi
 
-  local max=40
-  if [ "${#pwd}" -le "$max" ]; then
-    printf '%s' "$pwd"
-  else
-    local start_len=16
-    local end_len=$((max - start_len - 1))
-    local start_part="${pwd:0:start_len}"
-    local end_part="${pwd: -$end_len}"
-    printf '%s…%s' "$start_part" "$end_part"
-  fi
+    local max=40
+    if [ "${#pwd}" -le "$max" ]; then
+        printf '%s' "$pwd"
+    else
+        local start_len=16
+        local end_len=$((max - start_len - 1))
+        local start_part="${pwd:0:start_len}"
+        local end_part="${pwd: -$end_len}"
+        printf '%s…%s' "$start_part" "$end_part"
+    fi
 }
 
 PROMPT_COMMAND='__last_exit=$?'
@@ -1616,7 +1793,7 @@ command_not_found_handle() {
     local cmd="$1"
 
     case "$cmd" in
-        */*|.|..|~*)
+        */* | . | .. | ~*)
             printf 'bash: %s: command not found\n' "$cmd" >&2
             return 127
             ;;
