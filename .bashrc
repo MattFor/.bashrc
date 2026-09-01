@@ -1744,6 +1744,7 @@ alias nano='micro'
 alias pdf='zathura'
 alias ff='fastfetch'
 alias open='xdg-open'
+alias lt='e leetcode.nvim'
 alias qr="zbarimg -q --raw"
 
 alias torus='$___name'
