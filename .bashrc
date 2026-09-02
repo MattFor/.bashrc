@@ -1618,6 +1618,48 @@ virtdown() {
 
 ### Other useful commands
 
+a() {
+    local tu104 hyperx current target
+
+    tu104=$(pactl list sinks | awk '
+        /^Sink #/ { name="" }
+        /^[[:space:]]*Name:/ { name=$2 }
+        /^[[:space:]]*Description:/ {
+            desc=$0
+            sub(/^[^:]*:[[:space:]]*/, "", desc)
+            if (desc == "TU104 HD Audio Controller Digital Stereo (HDMI)")
+                print name
+        }
+    ' | head -n1)
+
+    hyperx=$(pactl list sinks | awk '
+        /^Sink #/ { name="" }
+        /^[[:space:]]*Name:/ { name=$2 }
+        /^[[:space:]]*Description:/ {
+            desc=$0
+            sub(/^[^:]*:[[:space:]]*/, "", desc)
+            if (desc == "HyperX Cloud III Analog Stereo")
+                print name
+        }
+    ' | head -n1)
+
+    current=$(pactl get-default-sink)
+
+    if [[ "$current" == "$tu104" ]]; then
+        target="$hyperx"
+        echo "Switching to HyperX Cloud III"
+    else
+        target="$tu104"
+        echo "Switching to TU104 HDMI"
+    fi
+
+    pactl set-default-sink "$target"
+
+    pactl list short sink-inputs | cut -f1 | while read -r id; do
+        pactl move-sink-input "$id" "$target"
+    done
+}
+
 cc() {
     if [[ $# -ne 3 ]]; then
         echo "Usage: cc <amount> <from_currency> <to_currency>" >&2
