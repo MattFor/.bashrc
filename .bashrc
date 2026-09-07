@@ -808,6 +808,87 @@ gitrecurse() {
     git submodule foreach --recursive "gitrecurse-repo '$msg'"
 }
 
+gitpr() {
+    if [ -z "$1" ]; then
+        echo 'Usage: gitpr "title" ["body"]' >&2
+        return 1
+    fi
+
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "Error: not inside a Git repository." >&2
+        return 1
+    fi
+
+    if ! command -v gh >/dev/null 2>&1 || ! command -v tea >/dev/null 2>&1; then
+        echo "Error: both gh and tea are required." >&2
+        return 1
+    fi
+
+    if [ -z "$(tea login list -o simple 2>/dev/null)" ]; then
+        echo "Error: no gitea login configured, run: tea login add" >&2
+        return 1
+    fi
+
+    local title="$1"
+    local body="${2:-}"
+    local branch base
+
+    branch="$(git branch --show-current)"
+
+    if [ -z "$branch" ]; then
+        echo "Error: not currently on a branch." >&2
+        return 1
+    fi
+
+    base="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)"
+    base="${base#origin/}"
+
+    if [ -z "$base" ]; then
+        base="$(git config --get init.defaultBranch)"
+        base="${base:-main}"
+    fi
+
+    if [ "$branch" = "$base" ]; then
+        echo "Error: current branch is the base branch ($base)." >&2
+        return 1
+    fi
+
+    git push -u origin "$branch" || return 1
+
+    local monitor=0
+    [[ $- == *m* ]] && monitor=1
+    set +m
+
+    local gh_log tea_log gh_pid tea_pid gh_rc tea_rc
+
+    gh_log="$(mktemp)"
+    tea_log="$(mktemp)"
+
+    gh pr create --base "$base" --head "$branch" --title "$title" --body "$body" >"$gh_log" 2>&1 &
+    gh_pid=$!
+
+    tea pr create --remote origin --base "$base" --head "$branch" --title "$title" --description "$body" >"$tea_log" 2>&1 &
+    tea_pid=$!
+
+    wait "$gh_pid"
+    gh_rc=$?
+
+    wait "$tea_pid"
+    tea_rc=$?
+
+    [ "$monitor" -eq 1 ] && set -m
+
+    echo "=== GitHub ==="
+    cat "$gh_log"
+
+    echo "=== Codeberg ==="
+    cat "$tea_log"
+
+    rm -f "$gh_log" "$tea_log"
+
+    [ "$gh_rc" -eq 0 ] && [ "$tea_rc" -eq 0 ]
+}
+
 relaxy-dl() {
     if [ $# -lt 1 ]; then
         echo "Usage: relaxy-dl <remote_file> [local_path]"
@@ -1633,7 +1714,7 @@ a() {
         /^[[:space:]]*Description:/ {
             desc=$0
             sub(/^[^:]*:[[:space:]]*/, "", desc)
-            if (desc == "TU104 HD Audio Controller Digital Stereo (HDMI)")
+            if (index(desc, "TU104 HD Audio Controller Digital Stereo (HDMI)") == 1)
                 print name
         }
     ' | head -n1)
@@ -1644,7 +1725,7 @@ a() {
         /^[[:space:]]*Description:/ {
             desc=$0
             sub(/^[^:]*:[[:space:]]*/, "", desc)
-            if (desc == "HyperX Cloud III Analog Stereo")
+            if (index(desc, "HyperX Cloud III Analog Stereo") == 1)
                 print name
         }
     ' | head -n1)
