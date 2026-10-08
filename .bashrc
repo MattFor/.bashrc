@@ -2673,7 +2673,7 @@ alias qr="zbarimg -q --raw"
 
 alias torus='$___name'
 alias rpi='$___rel_ssh'
-rpi-raw() {
+function rpi-raw {
     local target=${RPI_SSH_TARGET:-}
     local key=${RPI_SSH_KEY:-}
     local port=${RPI_SSH_PORT:-22}
