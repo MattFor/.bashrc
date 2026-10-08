@@ -1477,7 +1477,7 @@ ai() {
                 'local: Choose an Ollama model' \
                 'interpreter: Run Open Interpreter with a local Ollama model' \
                 'agents: Choose a coding agent' \
-                'odysseus: Open Odysseus' \
+                'odysseus: Open Odysseus (or terminal chat)' \
                 'freellmapi: Open FreeLLMAPI' \
                 'remote: Connect to another Tailscale machine' \
                 'health: Check every local AI service, endpoint, and model' \
@@ -1587,6 +1587,32 @@ ai() {
             codex "$@"
             ;;
         odysseus)
+            if [ "${1:-}" = "terminal" ] || [ "${1:-}" = "chat" ]; then
+                shift
+                command -v interpreter >/dev/null 2>&1 || {
+                    printf '%s\n' "Open Interpreter is not installed." >&2
+                    return 1
+                }
+                models=$(ollama list 2>/dev/null | awk 'NR > 1 && $1 != "" { print $1 }')
+                [ -n "$models" ] || {
+                    printf '%s\n' "No Ollama models are installed or Ollama is not running." >&2
+                    return 1
+                }
+                model=${1:-}
+                [ -n "$model" ] && printf '%s\n' "$models" | grep -Fxq "$model" || model=
+                if [ -z "$model" ]; then
+                    model=$(printf '%s\n' "$models" | fzf --prompt='Odysseus terminal model: ' --height=40% --layout=reverse)
+                else
+                    shift
+                fi
+                [ -n "$model" ] || return 0
+                if [ $# -gt 0 ]; then
+                    printf '%s\n' "$*" | interpreter --model "$model" --api_base "$interpreter_api_base" --api_key ollama --offline
+                else
+                    interpreter --model "$model" --api_base "$interpreter_api_base" --api_key ollama --offline
+                fi
+                return
+            fi
             url=http://127.0.0.1:7000
             command -v xdg-open >/dev/null 2>&1 || {
                 printf '%s\n' "$url"
@@ -2022,6 +2048,7 @@ EOF
                 '  ai copilot                Start GitHub Copilot CLI' \
                 '  ai codex                  Start OpenAI Codex CLI' \
                 '  ai odysseus               Open the Odysseus web UI' \
+                '  ai odysseus terminal      Start an Odysseus-style tool-enabled terminal chat' \
                 '  ai freellmapi             Open the FreeLLMAPI dashboard' \
                 '  ai remote setup           Show Tailscale setup instructions' \
                 '  ai remote status         List remote machines by name' \
