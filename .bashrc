@@ -1608,7 +1608,7 @@ ai() {
                         return 2
                     }
                     case "$remote_agent" in
-                        claude|copilot|codex) remote_executable=$remote_agent ;;
+                        claude | copilot | codex) remote_executable=$remote_agent ;;
                         cursor) remote_executable=agent ;;
                         *)
                             printf '%s\n' "Unknown remote agent: $remote_agent" >&2
@@ -1641,7 +1641,7 @@ ai() {
                         ollama) remote_port=11434 ;;
                         odysseus) remote_port=7000 ;;
                         freellmapi) remote_port=3001 ;;
-                        ''|*[!0-9]*) 
+                        '' | *[!0-9]*)
                             printf '%s\n' "Unknown service: $remote_service" >&2
                             return 2
                             ;;
@@ -1649,7 +1649,7 @@ ai() {
                     esac
                     remote_port=${4:-$remote_port}
                     case "$remote_port" in
-                        ''|*[!0-9]*)
+                        '' | *[!0-9]*)
                             printf '%s\n' "Local port must be numeric." >&2
                             return 2
                             ;;
@@ -1692,7 +1692,8 @@ ai() {
                         printf 'Prompt for %s via %s: ' "$model" "$remote_host"
                         IFS= read -r remote_prompt
                     fi
-                    remote_response=$(python3 - "$model" "$remote_prompt" <<'PY'
+                    remote_response=$(
+                        python3 - "$model" "$remote_prompt" <<'PY'
 import json
 import sys
 model, prompt = sys.argv[1:]
@@ -1706,8 +1707,8 @@ PY
                     ) || return 1
                     curl -fsS --max-time 600 http://127.0.0.1:11434/api/generate \
                         -H 'Content-Type: application/json' \
-                        -d "$remote_response" |
-                        python3 -c 'import json, sys; print(json.load(sys.stdin).get("response", ""))'
+                        -d "$remote_response" \
+                        | python3 -c 'import json, sys; print(json.load(sys.stdin).get("response", ""))'
                     ;;
                 help | *)
                     printf '%s\n' \
@@ -2267,6 +2268,27 @@ rpi-raw() {
     ssh "${ssh_args[@]}" "$target" "$@"
 }
 alias piwatch='tmux -L piwatch a -t piwatch'
+
+tssh() {
+    local target=${1:-}
+    shift || true
+
+    if [ -z "$target" ]; then
+        local local_host map_name
+        local_host=$(hostname | cut -d. -f1 | tr '[:lower:]' '[:upper:]' | sed 's/[^A-Z0-9_]/_/g')
+        map_name="TSSH_PEER_${local_host}"
+        target=${!map_name:-${TSSH_DEFAULT_TARGET:-}}
+    fi
+    if [ -z "$target" ]; then
+        printf 'Usage: tssh <host|user@host> [command...]\n' >&2
+        return 2
+    fi
+    case "$target" in
+        *@*) ;;
+        *) target="${TSSH_USER:-${USER:-}}@$target" ;;
+    esac
+    tailscale ssh "$target" "$@"
+}
 
 alias lh='du -sh *'
 alias ls='ls --color=auto'
