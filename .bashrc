@@ -1458,8 +1458,195 @@ rustdoc_search() {
 
 alias rdoc='rustdoc_search'
 
+_ai_state_dir() {
+    local dir=${XDG_STATE_HOME:-"$HOME/.local/state"}
+    dir="$dir/ai"
+    (umask 077 && mkdir -p "$dir") || return 1
+    chmod 700 "$dir" || return 1
+    printf '%s\n' "$dir"
+}
+
+_ai_process_starttime() {
+    local check_pid=${1:-}
+    [[ "$check_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+    [ -r "/proc/$check_pid/stat" ] || return 1
+    awk '{ sub(/^.*\) /, ""); print $20 }' "/proc/$check_pid/stat"
+}
+
+_ai_record_pidfile() {
+    local path=${1:-} process_pid=${2:-} starttime temp attempt
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        starttime=$(_ai_process_starttime "$process_pid" 2>/dev/null) && break
+        sleep 0.05
+    done
+    [[ "$starttime" =~ ^[0-9]+$ ]] || return 1
+    temp=$(mktemp "${path}.tmp.XXXXXX") || return 1
+    (umask 077; printf '%s %s\n' "$process_pid" "$starttime" > "$temp") || {
+        rm -f -- "$temp"
+        return 1
+    }
+    mv -f -- "$temp" "$path" || {
+        rm -f -- "$temp"
+        return 1
+    }
+}
+
+_ai_stop_pidfile() {
+    local path=${1:-} expected=${2:-} label=${3:-process} pid starttime current_starttime cmdline
+    [ -f "$path" ] || return 0
+    if ! read -r pid starttime < "$path" || [[ ! "$pid" =~ ^[1-9][0-9]*$ ]] || [[ ! "$starttime" =~ ^[0-9]+$ ]]; then
+        printf 'Ignoring invalid %s PID file.\n' "$label" >&2
+        rm -f -- "$path"
+        return 0
+    fi
+    current_starttime=$(_ai_process_starttime "$pid" 2>/dev/null || true)
+    if [ "$current_starttime" = "$starttime" ] && [ -r "/proc/$pid/cmdline" ]; then
+        cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null) || cmdline=
+    else
+        cmdline=
+    fi
+    if [ "$current_starttime" = "$starttime" ] && [[ "$cmdline" == *"$expected"* ]]; then
+        if kill "$pid" 2>/dev/null; then
+            printf 'Stopped %s.\n' "$label"
+        else
+            printf '%s had already exited.\n' "$label"
+        fi
+    else
+        printf 'Ignoring stale or mismatched %s PID file; process was not terminated.\n' "$label" >&2
+    fi
+    rm -f -- "$path"
+}
+
+_ai_remote_ollama() (
+    local remote_host model remote_list_only remote_tunnel_port remote_api_base remote_tunnel_log remote_tunnel_pid
+    local remote_models_json remote_model_entries remote_selected remote_prompt remote_response remote_result remote_curl_status models i
+    local -a remote_model_options
+    local PS3
+    remote_tunnel_pid=
+    remote_tunnel_log=
+    trap 'if [ -n "${remote_tunnel_pid:-}" ]; then kill "$remote_tunnel_pid" 2>/dev/null || true; wait "$remote_tunnel_pid" 2>/dev/null || true; fi; if [ -n "${remote_tunnel_log:-}" ]; then rm -f -- "$remote_tunnel_log"; fi' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+                    remote_host=$2
+                    model=$3
+                    [ -n "$remote_host" ] || {
+                        printf '%s\n' "Usage: ai remote local <machine> [MODEL] [PROMPT...]" >&2
+                        return 2
+                    }
+                    remote_list_only=0
+                    if [ "$model" = "--list" ]; then
+                        remote_list_only=1
+                        model=
+                    fi
+                    if [ "$#" -ge 3 ]; then
+                        shift 3
+                    else
+                        shift "$#"
+                    fi
+                    remote_tunnel_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()') || return 1
+                    remote_api_base="http://127.0.0.1:$remote_tunnel_port"
+                    remote_tunnel_log=$(mktemp "${TMPDIR:-/tmp}/ai-remote-ollama.XXXXXX") || return 1
+                    tailscale ssh "$remote_host" -N -L "$remote_tunnel_port:127.0.0.1:11434" >"$remote_tunnel_log" 2>&1 </dev/null &
+                    remote_tunnel_pid=$!
+                    remote_models_json=
+                    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+                        remote_models_json=$(curl -fsS --max-time 1 "$remote_api_base/api/tags" 2>/dev/null) && break
+                        kill -0 "$remote_tunnel_pid" 2>/dev/null || break
+                        sleep 0.25
+                    done
+                    if [ -z "$remote_models_json" ]; then
+                        if grep -q 'connect failed: dial tcp 127.0.0.1:11434: connect: connection refused' "$remote_tunnel_log"; then
+                            printf '%s\n' \
+                                "Tailscale SSH reached $remote_host, but Ollama is not listening on its local port 11434." \
+                                "On $remote_host, start the Ollama service, or run ollama serve if it is not managed as a service; then check curl -fsS http://127.0.0.1:11434/api/tags." \
+                                'Then run `ai remote` again.' >&2
+                        else
+                            [ ! -s "$remote_tunnel_log" ] || tail -n 5 "$remote_tunnel_log" >&2
+                            printf '%s\n' "Remote Ollama is unavailable on $remote_host. Check that Ollama is running and reachable over Tailscale SSH." >&2
+                        fi
+                        return 1
+                    fi
+                    remote_model_entries=$(printf '%s' "$remote_models_json" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+for model in data.get("models", []):
+    name = model.get("name")
+    if not name:
+        continue
+    details = model.get("details") or {}
+    size = model.get("size") or 0
+    size_label = ""
+    if size:
+        value = float(size)
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if value < 1024 or unit == "TB":
+                size_label = f"{value:.1f} {unit}"
+                break
+            value /= 1024
+    info = [part for part in (details.get("parameter_size"), details.get("quantization_level"), size_label) if part]
+    label = " · ".join(info) if info else "Ollama model"
+    print("{}\t{}".format(name, label))
+') || {
+                        printf '%s\n' "Could not read the model list from $remote_host." >&2
+                        return 1
+                    }
+                    models=$(printf '%s\n' "$remote_model_entries" | cut -f1)
+                    if [ -z "$models" ]; then
+                        printf '%s\n' "No Ollama models are installed on $remote_host." >&2
+                        return 1
+                    fi
+                    if [ "$remote_list_only" -eq 1 ]; then
+                        printf '%s\n' "$remote_model_entries" | awk -F '\t' '{ printf "%-44s %s\n", $1, $2 }'
+                        return 0
+                    fi
+                    [ -n "$model" ] && printf '%s\n' "$models" | grep -Fxq "$model" || model=
+                    if [ -z "$model" ]; then
+                        if command -v fzf >/dev/null 2>&1; then
+                            remote_selected=$(printf '%s\n' "$remote_model_entries" | fzf --delimiter="$(printf '\t')" --with-nth=2.. --prompt="Remote model ($remote_host): " --height=50% --layout=reverse)
+                            if [ -n "$remote_selected" ]; then
+                                model=${remote_selected%%$'\t'*}
+                            fi
+                        else
+                            mapfile -t remote_model_options < <(printf '%s\n' "$models")
+                            PS3="Select a model on $remote_host: "
+                            select model in "${remote_model_options[@]}"; do
+                                [ -n "$model" ] && break
+                            done
+                        fi
+                    fi
+                    if [ -z "$model" ]; then
+                        return 0
+                    fi
+                    if [ $# -gt 0 ]; then
+                        remote_prompt="$*"
+                    else
+                        IFS= read -r -e -p "Prompt for $model on $remote_host: " remote_prompt
+                    fi
+                    remote_response=$(
+                        python3 - "$model" "$remote_prompt" <<'PY'
+import json
+import sys
+model, prompt = sys.argv[1:]
+print(json.dumps({
+    "model": model,
+    "prompt": prompt,
+    "stream": False,
+    "think": True,
+}))
+PY
+                    ) || {
+                        return 1
+                    }
+                    remote_result=$(curl -fsS --max-time 600 "$remote_api_base/api/generate" \
+                        -H 'Content-Type: application/json' \
+                        -d "$remote_response")
+                    remote_curl_status=$?
+                    [ "$remote_curl_status" -eq 0 ] || return "$remote_curl_status"
+                    printf '%s' "$remote_result" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("response", ""))'
+)
+
 ai() {
-    local action model interpreter_model selected models choice root gateway ollama_pid odysseus_pid pid i url remote_host remote_service remote_port remote_local_port ts_hostname remote_prompt remote_response interpreter_api_base
+    local action model interpreter_model selected models choice root gateway ollama_pid odysseus_pid ollama_log odysseus_log pid pid_start i url remote_host remote_service remote_port remote_local_port ts_hostname remote_prompt remote_response interpreter_api_base odysseus_running nl2sh_prompt ai_state_dir
     local remote_action remote_hosts remote_status_json remote_selected remote_label remote_host_entries
     local remote_api_base remote_tunnel_pid remote_tunnel_port remote_tunnel_log remote_models_json remote_model_entries remote_result remote_list_only remote_curl_status
     local -a remote_host_options remote_model_options
@@ -1474,38 +1661,47 @@ ai() {
     if [ $# -gt 0 ]; then
         action=$1
         shift
-        if ollama list 2>/dev/null | awk 'NR > 1 { print $1 }' | grep -Fxq "$action"; then
-            set -- "$action" "$@"
-            action=local
-        fi
+        case "$action" in
+            local | shell | nl2sh | whatisit | interpreter | agents | claude | copilot | cursor | codex | odysseus | freellmapi | remote | health | status | models | logs | on | start | stop | autostart | help) ;;
+            *)
+                if command -v ollama >/dev/null 2>&1 \
+                    && ollama list 2>/dev/null | awk 'NR > 1 { print $1 }' | grep -Fxq -- "$action"; then
+                    set -- "$action" "$@"
+                    action=local
+                fi
+                ;;
+        esac
     else
         choice=$(
             printf '%s\n' \
                 'local: Choose an Ollama model' \
+                'shell: Generate a shell command from natural language' \
                 'interpreter: Run Open Interpreter with a local Ollama model' \
                 'agents: Choose a coding agent' \
                 'odysseus: Open Odysseus (or terminal chat)' \
                 'freellmapi: Open FreeLLMAPI' \
                 'remote: Choose a Tailscale PC and one of its Ollama models' \
-                'health: Check every local AI service, endpoint, and model' \
+                'health: Check AI tools, services, endpoints, and models' \
                 'status: Check local AI services' \
                 'models: List installed Ollama models' \
                 'logs: Show recent AI service logs' \
+                'on: Start and verify the local AI stack' \
                 'start: Start the local AI stack' \
-                'stop: Stop the local AI stack' \
+                'stop: Stop AI services and containers, keep Docker running' \
                 'autostart: Manage Docker autostart' \
                 'help: Show ai usage' \
                 | fzf --prompt='AI command: ' --height=55% --layout=reverse
         )
         [ -n "$choice" ] || return 0
         action=${choice%%:*}
-        [ "$action" = "local" ] || [ "$action" = "interpreter" ] || [ "$action" = "agents" ] \
+        [ "$action" = "local" ] || [ "$action" = "shell" ] || [ "$action" = "nl2sh" ] || [ "$action" = "whatisit" ] \
+            || [ "$action" = "interpreter" ] || [ "$action" = "agents" ] \
             || [ "$action" = "claude" ] || [ "$action" = "copilot" ] || [ "$action" = "cursor" ] \
             || [ "$action" = "codex" ] || [ "$action" = "status" ] \
             || [ "$action" = "odysseus" ] || [ "$action" = "freellmapi" ] || [ "$action" = "health" ] \
             || [ "$action" = "models" ] \
             || [ "$action" = "remote" ] \
-            || [ "$action" = "logs" ] || [ "$action" = "start" ] || [ "$action" = "stop" ] \
+            || [ "$action" = "logs" ] || [ "$action" = "on" ] || [ "$action" = "start" ] || [ "$action" = "stop" ] \
             || [ "$action" = "autostart" ] || action=help
     fi
 
@@ -1523,6 +1719,23 @@ ai() {
     fi
 
     case "$action" in
+        shell | nl2sh | whatisit)
+            command -v whatisit >/dev/null 2>&1 || {
+                printf '%s\n' "whatisit is not installed. Install it from ThorOdinson246/whatisit-nl2sh first." >&2
+                return 1
+            }
+            if [ $# -eq 0 ]; then
+                [ -t 0 ] || {
+                    printf '%s\n' "Usage: ai shell <plain-English request>" >&2
+                    return 2
+                }
+                read -r -e -p 'Shell request: ' nl2sh_prompt || return
+                [ -n "$nl2sh_prompt" ] || return 0
+                whatisit "$nl2sh_prompt"
+            else
+                whatisit "$@"
+            fi
+            ;;
         local)
             models=$(ollama list 2>/dev/null | awk 'NR > 1 && $1 != "" { print $1 }')
             [ -n "$models" ] || {
@@ -1811,136 +2024,7 @@ for peer in data.get("Peer", {}).values():
                     tailscale ssh "$remote_host" -N -L "$remote_local_port:127.0.0.1:$remote_port"
                     ;;
                 local)
-                    remote_host=$2
-                    model=$3
-                    [ -n "$remote_host" ] || {
-                        printf '%s\n' "Usage: ai remote local <machine> [MODEL] [PROMPT...]" >&2
-                        return 2
-                    }
-                    remote_list_only=0
-                    if [ "$model" = "--list" ]; then
-                        remote_list_only=1
-                        model=
-                    fi
-                    if [ "$#" -ge 3 ]; then
-                        shift 3
-                    else
-                        shift "$#"
-                    fi
-                    remote_tunnel_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()') || return 1
-                    remote_api_base="http://127.0.0.1:$remote_tunnel_port"
-                    remote_tunnel_log=$(mktemp "${TMPDIR:-/tmp}/ai-remote-ollama.XXXXXX") || return 1
-                    tailscale ssh "$remote_host" -N -L "$remote_tunnel_port:127.0.0.1:11434" >"$remote_tunnel_log" 2>&1 </dev/null &
-                    remote_tunnel_pid=$!
-                    remote_models_json=
-                    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-                        remote_models_json=$(curl -fsS --max-time 1 "$remote_api_base/api/tags" 2>/dev/null) && break
-                        kill -0 "$remote_tunnel_pid" 2>/dev/null || break
-                        sleep 0.25
-                    done
-                    if [ -z "$remote_models_json" ]; then
-                        kill "$remote_tunnel_pid" 2>/dev/null || true
-                        wait "$remote_tunnel_pid" 2>/dev/null || true
-                        [ ! -s "$remote_tunnel_log" ] || tail -n 5 "$remote_tunnel_log" >&2
-                        rm -f "$remote_tunnel_log"
-                        printf '%s\n' "Remote Ollama is unavailable on $remote_host. Check that Ollama is running and reachable over Tailscale SSH." >&2
-                        return 1
-                    fi
-                    remote_model_entries=$(printf '%s' "$remote_models_json" | python3 -c '
-import json, sys
-data = json.load(sys.stdin)
-for model in data.get("models", []):
-    name = model.get("name")
-    if not name:
-        continue
-    details = model.get("details") or {}
-    size = model.get("size") or 0
-    size_label = ""
-    if size:
-        value = float(size)
-        for unit in ("B", "KB", "MB", "GB", "TB"):
-            if value < 1024 or unit == "TB":
-                size_label = f"{value:.1f} {unit}"
-                break
-            value /= 1024
-    info = [part for part in (details.get("parameter_size"), details.get("quantization_level"), size_label) if part]
-    label = " · ".join(info) if info else "Ollama model"
-    print("{}\t{}".format(name, label))
-') || {
-                        kill "$remote_tunnel_pid" 2>/dev/null || true
-                        wait "$remote_tunnel_pid" 2>/dev/null || true
-                        rm -f "$remote_tunnel_log"
-                        printf '%s\n' "Could not read the model list from $remote_host." >&2
-                        return 1
-                    }
-                    models=$(printf '%s\n' "$remote_model_entries" | cut -f1)
-                    if [ -z "$models" ]; then
-                        kill "$remote_tunnel_pid" 2>/dev/null || true
-                        wait "$remote_tunnel_pid" 2>/dev/null || true
-                        rm -f "$remote_tunnel_log"
-                        printf '%s\n' "No Ollama models are installed on $remote_host." >&2
-                        return 1
-                    fi
-                    if [ "$remote_list_only" -eq 1 ]; then
-                        printf '%s\n' "$remote_model_entries" | awk -F '\t' '{ printf "%-44s %s\n", $1, $2 }'
-                        kill "$remote_tunnel_pid" 2>/dev/null || true
-                        wait "$remote_tunnel_pid" 2>/dev/null || true
-                        rm -f "$remote_tunnel_log"
-                        return 0
-                    fi
-                    [ -n "$model" ] && printf '%s\n' "$models" | grep -Fxq "$model" || model=
-                    if [ -z "$model" ]; then
-                        if command -v fzf >/dev/null 2>&1; then
-                            remote_selected=$(printf '%s\n' "$remote_model_entries" | fzf --delimiter="$(printf '\t')" --with-nth=2.. --prompt="Remote model ($remote_host): " --height=50% --layout=reverse)
-                            if [ -n "$remote_selected" ]; then
-                                model=${remote_selected%%$'\t'*}
-                            fi
-                        else
-                            mapfile -t remote_model_options < <(printf '%s\n' "$models")
-                            PS3="Select a model on $remote_host: "
-                            select model in "${remote_model_options[@]}"; do
-                                [ -n "$model" ] && break
-                            done
-                        fi
-                    fi
-                    if [ -z "$model" ]; then
-                        kill "$remote_tunnel_pid" 2>/dev/null || true
-                        wait "$remote_tunnel_pid" 2>/dev/null || true
-                        rm -f "$remote_tunnel_log"
-                        return 0
-                    fi
-                    if [ $# -gt 0 ]; then
-                        remote_prompt="$*"
-                    else
-                        IFS= read -r -e -p "Prompt for $model on $remote_host: " remote_prompt
-                    fi
-                    remote_response=$(
-                        python3 - "$model" "$remote_prompt" <<'PY'
-import json
-import sys
-model, prompt = sys.argv[1:]
-print(json.dumps({
-    "model": model,
-    "prompt": prompt,
-    "stream": False,
-    "think": True,
-}))
-PY
-                    ) || {
-                        kill "$remote_tunnel_pid" 2>/dev/null || true
-                        wait "$remote_tunnel_pid" 2>/dev/null || true
-                        rm -f "$remote_tunnel_log"
-                        return 1
-                    }
-                    remote_result=$(curl -fsS --max-time 600 "$remote_api_base/api/generate" \
-                        -H 'Content-Type: application/json' \
-                        -d "$remote_response")
-                    remote_curl_status=$?
-                    kill "$remote_tunnel_pid" 2>/dev/null || true
-                    wait "$remote_tunnel_pid" 2>/dev/null || true
-                    rm -f "$remote_tunnel_log"
-                    [ "$remote_curl_status" -eq 0 ] || return "$remote_curl_status"
-                    printf '%s' "$remote_result" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("response", ""))'
+                    _ai_remote_ollama "$@"
                     ;;
                 help | *)
                     printf '%s\n' \
@@ -1965,7 +2049,7 @@ PY
             ollama list
             ;;
         health)
-            local health_failed=0 health_mode=${1:-shallow} health_model
+            local health_failed=0 health_mode=${1:-shallow} health_model health_cli health_nl2sh_response
             printf '%s\n' 'AI health check'
             printf '%-28s' 'Ollama HTTP API'
             if curl -fsS --max-time 3 http://127.0.0.1:11434/api/tags >/dev/null; then
@@ -2002,6 +2086,30 @@ PY
                 printf '%s\n' 'FAIL'
                 health_failed=1
             fi
+            printf '%-28s' 'whatisit CLI and model'
+            if command -v whatisit >/dev/null 2>&1 && whatisit doctor >/dev/null 2>&1; then
+                printf '%s\n' 'OK'
+                if [ "$health_mode" = "deep" ]; then
+                    printf '%-28s' 'whatisit inference'
+                    if health_nl2sh_response=$(whatisit --idle-timeout 300 -q print the word OK 2>/dev/null) && [ -n "$health_nl2sh_response" ]; then
+                        printf '%s\n' 'OK'
+                    else
+                        printf '%s\n' 'FAIL'
+                        health_failed=1
+                    fi
+                fi
+            else
+                printf '%s\n' 'FAIL'
+                health_failed=1
+            fi
+            for health_cli in claude copilot agent codex; do
+                printf '%-28s' "$health_cli CLI"
+                if command -v "$health_cli" >/dev/null 2>&1; then
+                    printf '%s\n' 'installed (auth unchecked)'
+                else
+                    printf '%s\n' 'not installed (optional)'
+                fi
+            done
             printf '%s\n' 'Docker containers:'
             docker compose -f "$root/docker-compose.yml" ps 2>/dev/null || health_failed=1
             docker compose -f "$gateway/docker-compose.yml" ps 2>/dev/null || health_failed=1
@@ -2038,7 +2146,7 @@ PY
 $models
 EOF
             fi
-            [ "$health_mode" = "deep" ] || printf '%s\n' 'Use `ai health deep` to run a small inference request through every local model.'
+            [ "$health_mode" = "deep" ] || printf '%s\n' 'Use `ai health deep` to run inference checks for Ollama models and whatisit.'
             return "$health_failed"
             ;;
         status)
@@ -2064,9 +2172,10 @@ EOF
             ollama list 2>/dev/null || true
             ;;
         logs)
+            ai_state_dir=$(_ai_state_dir) || return 1
             case "${1:-all}" in
-                ollama) tail -n 80 /tmp/ollama-serve.log 2>/dev/null || printf '%s\n' "No Ollama log found." ;;
-                odysseus) tail -n 80 /tmp/odysseus.log 2>/dev/null || printf '%s\n' "No Odysseus log found." ;;
+                ollama) tail -n 80 "$ai_state_dir/ollama-serve.log" 2>/dev/null || printf '%s\n' "No Ollama log found." ;;
+                odysseus) tail -n 80 "$ai_state_dir/odysseus.log" 2>/dev/null || printf '%s\n' "No Odysseus log found." ;;
                 freellmapi) docker compose -f "$gateway/docker-compose.yml" logs --tail=80 --no-color freellmapi ;;
                 all)
                     ai logs ollama
@@ -2079,7 +2188,7 @@ EOF
                     ;;
             esac
             ;;
-        start)
+        on | start)
             if [ "${1:-}" = "tailscale" ]; then
                 command -v tailscale >/dev/null 2>&1 || {
                     printf '%s\n' "Tailscale is not installed." >&2
@@ -2106,40 +2215,101 @@ EOF
                 sudo sv up docker
                 return $?
             fi
-            ollama_pid=/tmp/ollama-serve.pid
-            odysseus_pid=/tmp/odysseus.pid
-            if [ -d /etc/sv/docker ] && [ ! -e /var/service/docker ]; then
-                sudo ln -s /etc/sv/docker /var/service/docker || return 1
+            ai_state_dir=$(_ai_state_dir) || {
+                printf '%s\n' "Could not create the private AI runtime directory." >&2
+                return 1
+            }
+            ollama_pid="$ai_state_dir/ollama-serve.pid"
+            odysseus_pid="$ai_state_dir/odysseus.pid"
+            ollama_log="$ai_state_dir/ollama-serve.log"
+            odysseus_log="$ai_state_dir/odysseus.log"
+            command -v ollama >/dev/null 2>&1 || {
+                printf '%s\n' "Ollama is not installed or not on PATH." >&2
+                return 1
+            }
+            if ! docker info >/dev/null 2>&1; then
+                if [ -d /etc/sv/docker ] && [ ! -e /var/service/docker ]; then
+                    sudo ln -s /etc/sv/docker /var/service/docker || return 1
+                fi
+                sudo sv up docker || return 1
+                for i in $(seq 1 30); do
+                    docker info >/dev/null 2>&1 && break
+                    sleep 1
+                done
             fi
-            sudo sv up docker || return 1
-            for i in $(seq 1 30); do
-                docker info >/dev/null 2>&1 && break
-                sleep 1
-            done
             docker info >/dev/null 2>&1 || {
                 printf '%s\n' "Docker did not become ready." >&2
                 return 1
             }
             (cd "$root" && docker compose up -d chromadb searxng ntfy) || return 1
             (cd "$gateway" && docker compose up -d freellmapi) || return 1
-            if ! ollama list >/dev/null 2>&1; then
-                if [ -f "$ollama_pid" ] && kill -0 "$(cat "$ollama_pid")" 2>/dev/null; then
-                    :
+            if curl -fsS --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+                printf '%s\n' "Ollama is already running."
+            else
+                if pgrep -x ollama >/dev/null 2>&1; then
+                    printf '%s\n' "Waiting for the existing Ollama process..."
                 else
-                    OLLAMA_LOAD_TIMEOUT=15m nohup ollama serve >/tmp/ollama-serve.log 2>&1 &
-                    echo $! >"$ollama_pid"
+                    OLLAMA_LOAD_TIMEOUT=15m nohup ollama serve >"$ollama_log" 2>&1 &
+                    pid=$!
+                    _ai_record_pidfile "$ollama_pid" "$pid" || {
+                        kill "$pid" 2>/dev/null || true
+                        printf '%s\n' "Could not safely record the Ollama process ID." >&2
+                        return 1
+                    }
+                    printf '%s\n' "Started Ollama."
                 fi
+                for i in $(seq 1 30); do
+                    curl -fsS --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break
+                    sleep 1
+                done
+                curl -fsS --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1 || {
+                    printf '%s\n' "Ollama did not become ready; see ai logs ollama." >&2
+                    return 1
+                }
             fi
-            if [ -f "$odysseus_pid" ] && kill -0 "$(cat "$odysseus_pid")" 2>/dev/null; then
+            if curl -fsS --max-time 2 http://127.0.0.1:7000/health >/dev/null 2>&1; then
                 printf '%s\n' "Odysseus is already running."
             else
-                (
-                    cd "$root" || exit 1
-                    nohup .venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 7000 >/tmp/odysseus.log 2>&1 &
-                    echo $! >"$odysseus_pid"
-                )
-                printf '%s\n' "Odysseus started in the background."
+                odysseus_running=0
+                if [ -f "$odysseus_pid" ]; then
+                    pid=
+                    pid_start=
+                    read -r pid pid_start < "$odysseus_pid" 2>/dev/null || true
+                    if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && [[ "$pid_start" =~ ^[0-9]+$ ]] \
+                        && [ "$(_ai_process_starttime "$pid" 2>/dev/null)" = "$pid_start" ] \
+                        && kill -0 "$pid" 2>/dev/null \
+                        && [ -r "/proc/$pid/cmdline" ] \
+                        && tr '\0' ' ' <"/proc/$pid/cmdline" | grep -q 'uvicorn app:app'; then
+                        odysseus_running=1
+                    else
+                        rm -f "$odysseus_pid"
+                    fi
+                fi
+                if [ "$odysseus_running" -eq 0 ]; then
+                    (
+                        cd "$root" || exit 1
+                        nohup .venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 7000 >"$odysseus_log" 2>&1 &
+                        pid=$!
+                        _ai_record_pidfile "$odysseus_pid" "$pid" || {
+                            kill "$pid" 2>/dev/null || true
+                            exit 1
+                        }
+                    ) || return 1
+                    printf '%s\n' "Started Odysseus."
+                else
+                    printf '%s\n' "Waiting for the existing Odysseus process..."
+                fi
+                for i in $(seq 1 30); do
+                    curl -fsS --max-time 2 http://127.0.0.1:7000/health >/dev/null 2>&1 && break
+                    sleep 1
+                done
+                curl -fsS --max-time 2 http://127.0.0.1:7000/health >/dev/null 2>&1 || {
+                    printf '%s\n' "Odysseus did not become ready; see ai logs odysseus." >&2
+                    return 1
+                }
             fi
+            printf '%s\n' "Checking AI services and installed models..."
+            ai health
             ;;
         stop)
             if [ "${1:-}" = "tailscale" ]; then
@@ -2163,21 +2333,16 @@ EOF
                 fi
                 return 0
             fi
-            ollama_pid=/tmp/ollama-serve.pid
-            odysseus_pid=/tmp/odysseus.pid
-            if [ -f "$odysseus_pid" ]; then
-                pid=$(cat "$odysseus_pid")
-                kill "$pid" 2>/dev/null || true
-                rm -f "$odysseus_pid"
-            fi
-            if [ -f "$ollama_pid" ]; then
-                pid=$(cat "$ollama_pid")
-                kill "$pid" 2>/dev/null || true
-                rm -f "$ollama_pid"
-            fi
+            ai_state_dir=$(_ai_state_dir) || {
+                printf '%s\n' "Could not access the private AI runtime directory." >&2
+                return 1
+            }
+            ollama_pid="$ai_state_dir/ollama-serve.pid"
+            odysseus_pid="$ai_state_dir/odysseus.pid"
+            _ai_stop_pidfile "$odysseus_pid" 'uvicorn app:app' "Odysseus"
+            _ai_stop_pidfile "$ollama_pid" 'ollama serve' "Ollama"
             (cd "$root" && docker compose stop chromadb searxng ntfy >/dev/null 2>&1 || true)
             (cd "$gateway" && docker compose stop freellmapi >/dev/null 2>&1 || true)
-            sudo sv down docker >/dev/null 2>&1 || true
             ;;
         autostart)
             case "${1:-status}" in
@@ -2212,10 +2377,11 @@ EOF
             ;;
         help | *)
             printf '%s\n' \
-                'Usage: ai [local [MODEL] [PROMPT]|interpreter [MODEL] [PROMPT]|agents|claude|copilot|cursor|codex|odysseus|freellmapi|remote|health [deep]|status|models|logs|start|stop|autostart|help]' \
+                'Usage: ai [local [MODEL] [PROMPT]|shell [REQUEST]|interpreter [MODEL] [PROMPT]|agents|claude|copilot|cursor|codex|odysseus|freellmapi|remote|health [deep]|status|models|logs|on|start|stop|autostart|help]' \
                 'Examples:' \
                 '  ai                         Choose a tool interactively' \
                 '  ai local qwen3:14b        Run a local model' \
+                '  ai shell find files larger than 100MB  Generate a shell command' \
                 '  ai interpreter qwen3:14b  Run Open Interpreter with a local model' \
                 '  ai agents                 Choose a coding agent' \
                 '  ai claude                 Start Claude Code' \
@@ -2229,15 +2395,16 @@ EOF
                 '  ai remote status         List remote machines by name' \
                 '  ai remote ssh laptop     Connect to a machine without its IP' \
                 '  ai remote tunnel laptop ollama  Use a remote Ollama locally' \
-                '  ai health                 Check services, containers, endpoints, and models' \
-                '  ai health deep           Also run one small inference request per model' \
+                '  ai health                 Check installed AI tools, services, endpoints, and models' \
+                '  ai health deep           Also run inference checks for Ollama models and whatisit' \
                 '  ai status                 Check local services and models' \
                 '  ai logs all               Show recent service logs' \
+                '  ai on                    Start and verify the AI stack' \
                 '  ai start                  Start the AI stack in the background' \
                 '  ai start docker           Start Docker only' \
                 '  ai start tailscale       Start Tailscale using this machine name' \
-                '  ai stop                   Stop the AI stack' \
-                '  ai stop docker            Stop Docker only' \
+                '  ai stop                   Stop AI services and containers' \
+                '  ai stop docker            Stop the Docker daemon' \
                 '  ai stop tailscale        Stop Tailscale' \
                 '  ai autostart enable      Enable Docker autostart' \
                 '  ai autostart disable     Remove Docker autostart'
