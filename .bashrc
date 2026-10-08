@@ -1459,7 +1459,7 @@ rustdoc_search() {
 alias rdoc='rustdoc_search'
 
 ai() {
-    local action model selected models choice root gateway ollama_pid odysseus_pid pid i url remote_host remote_service remote_port ts_hostname
+    local action model selected models choice root gateway ollama_pid odysseus_pid pid i url remote_host remote_service remote_port ts_hostname remote_prompt remote_response
     root=${ODYSSEUS_ROOT:-"$HOME/applications/odysseus"}
     gateway=${FREELLMAPI_ROOT:-"$HOME/applications/freellmapi"}
 
@@ -1627,15 +1627,68 @@ ai() {
                     printf '%s\n' "Forwarding 127.0.0.1:$remote_port to $remote_host:127.0.0.1:$remote_port; press Ctrl-C to stop."
                     tailscale ssh "$remote_host" -N -L "$remote_port:127.0.0.1:$remote_port"
                     ;;
+                local)
+                    remote_host=$2
+                    model=$3
+                    shift 3
+                    [ -n "$remote_host" ] || {
+                        printf '%s\n' "Usage: ai remote local <machine> [MODEL] [PROMPT]" >&2
+                        return 2
+                    }
+                    if ! curl -fsS --max-time 3 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+                        if [ -f /tmp/ai-remote-ollama.pid ]; then
+                            pid=$(cat /tmp/ai-remote-ollama.pid)
+                            kill "$pid" 2>/dev/null || true
+                            rm -f /tmp/ai-remote-ollama.pid
+                        fi
+                        nohup tailscale ssh "$remote_host" -N -L 11434:127.0.0.1:11434 \
+                            >/tmp/ai-remote-ollama.log 2>&1 </dev/null &
+                        echo $! >/tmp/ai-remote-ollama.pid
+                        sleep 2
+                    fi
+                    curl -fsS --max-time 5 http://127.0.0.1:11434/api/tags >/dev/null 2>&1 || {
+                        printf '%s\n' "Remote Ollama is unavailable. Is $remote_host online and connected to Tailscale?" >&2
+                        return 1
+                    }
+                    models=$(curl -fsS http://127.0.0.1:11434/api/tags | python3 -c 'import json, sys; print("\n".join(m["name"] for m in json.load(sys.stdin)["models"]))') || return 1
+                    [ -n "$model" ] && printf '%s\n' "$models" | grep -Fxq "$model" || model=
+                    if [ -z "$model" ]; then
+                        model=$(printf '%s\n' "$models" | fzf --prompt="Remote model ($remote_host): " --height=40% --layout=reverse)
+                    fi
+                    [ -n "$model" ] || return 0
+                    if [ $# -gt 0 ]; then
+                        remote_prompt="$*"
+                    else
+                        printf 'Prompt for %s via %s: ' "$model" "$remote_host"
+                        IFS= read -r remote_prompt
+                    fi
+                    remote_response=$(python3 - "$model" "$remote_prompt" <<'PY'
+import json
+import sys
+model, prompt = sys.argv[1:]
+print(json.dumps({
+    "model": model,
+    "prompt": prompt,
+    "stream": False,
+    "think": True,
+}))
+PY
+                    ) || return 1
+                    curl -fsS --max-time 600 http://127.0.0.1:11434/api/generate \
+                        -H 'Content-Type: application/json' \
+                        -d "$remote_response" |
+                        python3 -c 'import json, sys; print(json.load(sys.stdin).get("response", ""))'
+                    ;;
                 help | *)
                     printf '%s\n' \
-                        'Usage: ai remote [setup|status|ssh|tunnel]' \
+                        'Usage: ai remote [setup|status|ssh|tunnel|local]' \
                         '  ai remote setup                         Show one-time Tailscale setup' \
                         '  ai remote status                        List machines and MagicDNS names' \
                         '  ai remote ssh <machine> [command...]    Open an SSH session by name' \
                         '  ai remote tunnel <machine> ollama       Tunnel remote Ollama to local port 11434' \
                         '  ai remote tunnel <machine> odysseus     Tunnel remote Odysseus to local port 7000' \
-                        '  ai remote tunnel <machine> freellmapi   Tunnel remote FreeLLMAPI to local port 3001'
+                        '  ai remote tunnel <machine> freellmapi   Tunnel remote FreeLLMAPI to local port 3001' \
+                        '  ai remote local <machine> [MODEL] [PROMPT]  Query remote Ollama automatically'
                     ;;
             esac
             ;;
