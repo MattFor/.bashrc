@@ -1459,9 +1459,10 @@ rustdoc_search() {
 alias rdoc='rustdoc_search'
 
 ai() {
-    local action model selected models choice root gateway ollama_pid odysseus_pid pid i url remote_host remote_service remote_port ts_hostname remote_prompt remote_response
+    local action model selected models choice root gateway ollama_pid odysseus_pid pid i url remote_host remote_service remote_port ts_hostname remote_prompt remote_response interpreter_api_base
     root=${ODYSSEUS_ROOT:-"$HOME/applications/odysseus"}
     gateway=${FREELLMAPI_ROOT:-"$HOME/applications/freellmapi"}
+    interpreter_api_base=${OPEN_INTERPRETER_API_BASE:-http://127.0.0.1:11434/v1}
 
     if [ $# -gt 0 ]; then
         action=$1
@@ -1474,10 +1475,8 @@ ai() {
         choice=$(
             printf '%s\n' \
                 'local: Choose an Ollama model' \
-                'claude: Claude Code' \
-                'copilot: GitHub Copilot CLI' \
-                'cursor: Cursor Agent' \
-                'codex: OpenAI Codex CLI' \
+                'interpreter: Run Open Interpreter with a local Ollama model' \
+                'agents: Choose a coding agent' \
                 'odysseus: Open Odysseus' \
                 'freellmapi: Open FreeLLMAPI' \
                 'remote: Connect to another Tailscale machine' \
@@ -1493,13 +1492,27 @@ ai() {
         )
         [ -n "$choice" ] || return 0
         action=${choice%%:*}
-        [ "$action" = "local" ] || [ "$action" = "claude" ] || [ "$action" = "copilot" ] \
-            || [ "$action" = "cursor" ] || [ "$action" = "codex" ] || [ "$action" = "status" ] \
+        [ "$action" = "local" ] || [ "$action" = "interpreter" ] || [ "$action" = "agents" ] \
+            || [ "$action" = "claude" ] || [ "$action" = "copilot" ] || [ "$action" = "cursor" ] \
+            || [ "$action" = "codex" ] || [ "$action" = "status" ] \
             || [ "$action" = "odysseus" ] || [ "$action" = "freellmapi" ] || [ "$action" = "health" ] \
             || [ "$action" = "models" ] \
             || [ "$action" = "remote" ] \
             || [ "$action" = "logs" ] || [ "$action" = "start" ] || [ "$action" = "stop" ] \
             || [ "$action" = "autostart" ] || action=help
+    fi
+
+    if [ "$action" = "agents" ]; then
+        selected=$(
+            printf '%s\n' \
+                'claude: Claude Code' \
+                'copilot: GitHub Copilot CLI' \
+                'cursor: Cursor Agent' \
+                'codex: OpenAI Codex CLI' \
+                | fzf --prompt='Coding agent: ' --height=40% --layout=reverse
+        )
+        [ -n "$selected" ] || return 0
+        action=${selected%%:*}
     fi
 
     case "$action" in
@@ -1520,6 +1533,29 @@ ai() {
                 ollama run "$model" "$*"
             else
                 ollama run "$model"
+            fi
+            ;;
+        interpreter)
+            command -v interpreter >/dev/null 2>&1 || {
+                printf '%s\n' "Open Interpreter is not installed." >&2
+                return 1
+            }
+            models=$(ollama list 2>/dev/null | awk 'NR > 1 && $1 != "" { print $1 }')
+            [ -n "$models" ] || {
+                printf '%s\n' "No Ollama models are installed or Ollama is not running." >&2
+                return 1
+            }
+            model=$1
+            [ -n "$model" ] && printf '%s\n' "$models" | grep -Fxq "$model" || model=
+            if [ -z "$model" ]; then
+                model=$(printf '%s\n' "$models" | fzf --prompt='Open Interpreter model: ' --height=40% --layout=reverse)
+            fi
+            [ -n "$model" ] || return 0
+            shift $(($# > 0 ? 1 : 0))
+            if [ $# -gt 0 ]; then
+                printf '%s\n' "$*" | interpreter --model "$model" --api_base "$interpreter_api_base" --api_key ollama --offline
+            else
+                interpreter --model "$model" --api_base "$interpreter_api_base" --api_key ollama --offline
             fi
             ;;
         claude)
@@ -1758,10 +1794,17 @@ PY
                 printf '%s\n' 'FAIL'
                 health_failed=1
             fi
+            printf '%-28s' 'Open Interpreter CLI'
+            if command -v interpreter >/dev/null 2>&1 && interpreter --help >/dev/null 2>&1; then
+                printf '%s\n' 'OK'
+            else
+                printf '%s\n' 'FAIL'
+                health_failed=1
+            fi
             printf '%s\n' 'Docker containers:'
             docker compose -f "$root/docker-compose.yml" ps 2>/dev/null || health_failed=1
             docker compose -f "$gateway/docker-compose.yml" ps 2>/dev/null || health_failed=1
-            printf '%s\n' 'Ollama models:'
+            printf '%s\n' 'Local models (Ollama and Open Interpreter):'
             models=$(ollama list 2>/dev/null | awk 'NR > 1 && $1 != "" { print $1 }')
             if [ -z "$models" ]; then
                 printf '%s\n' 'No models found'
@@ -1806,6 +1849,12 @@ EOF
             fi
             printf '%-14s' "Ollama"
             curl -fsS --max-time 3 http://127.0.0.1:11434/api/tags >/dev/null && printf '%s\n' "ready" || printf '%s\n' "offline"
+            printf '%-14s' "Interpreter"
+            if command -v interpreter >/dev/null 2>&1 && interpreter --help >/dev/null 2>&1; then
+                printf '%s\n' "ready"
+            else
+                printf '%s\n' "offline"
+            fi
             printf '%-14s' "Odysseus"
             curl -fsS --max-time 3 http://127.0.0.1:7000/health >/dev/null && printf '%s\n' "ready" || printf '%s\n' "offline"
             printf '%-14s' "FreeLLMAPI"
@@ -1962,10 +2011,12 @@ EOF
             ;;
         help | *)
             printf '%s\n' \
-                'Usage: ai [local [MODEL] [PROMPT]|claude|copilot|cursor|codex|odysseus|freellmapi|remote|health [deep]|status|models|logs|start|stop|autostart|help]' \
+                'Usage: ai [local [MODEL] [PROMPT]|interpreter [MODEL] [PROMPT]|agents|claude|copilot|cursor|codex|odysseus|freellmapi|remote|health [deep]|status|models|logs|start|stop|autostart|help]' \
                 'Examples:' \
                 '  ai                         Choose a tool interactively' \
                 '  ai local qwen3:14b        Run a local model' \
+                '  ai interpreter qwen3:14b  Run Open Interpreter with a local model' \
+                '  ai agents                 Choose a coding agent' \
                 '  ai claude                 Start Claude Code' \
                 '  ai cursor                 Start Cursor Agent' \
                 '  ai copilot                Start GitHub Copilot CLI' \
