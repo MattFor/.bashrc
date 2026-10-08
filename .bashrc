@@ -1674,10 +1674,9 @@ ai() {
     else
         choice=$(
             printf '%s\n' \
-                'local: Choose a model with local OS tools (asks before running code)' \
-                'chat: Plain Ollama chat (no OS tools)' \
+                'local: Model with OS tools' \
+                'chat: Plain model chat' \
                 'shell: Generate a shell command from natural language' \
-                'interpreter: Open Interpreter tool runner with a local model' \
                 'agents: Choose a coding agent' \
                 'odysseus: Open Odysseus (or terminal chat)' \
                 'freellmapi: Open FreeLLMAPI' \
