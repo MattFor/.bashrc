@@ -1662,7 +1662,7 @@ ai() {
         action=$1
         shift
         case "$action" in
-            local | shell | nl2sh | whatisit | interpreter | agents | claude | copilot | cursor | codex | odysseus | freellmapi | remote | health | status | models | logs | on | start | stop | autostart | help) ;;
+            local | chat | shell | nl2sh | whatisit | interpreter | agents | claude | copilot | cursor | codex | odysseus | freellmapi | remote | health | status | models | logs | on | start | stop | autostart | help) ;;
             *)
                 if command -v ollama >/dev/null 2>&1 \
                     && ollama list 2>/dev/null | awk 'NR > 1 { print $1 }' | grep -Fxq -- "$action"; then
@@ -1674,9 +1674,10 @@ ai() {
     else
         choice=$(
             printf '%s\n' \
-                'local: Choose an Ollama model' \
+                'local: Choose a model with local OS tools (asks before running code)' \
+                'chat: Plain Ollama chat (no OS tools)' \
                 'shell: Generate a shell command from natural language' \
-                'interpreter: Run Open Interpreter with a local Ollama model' \
+                'interpreter: Open Interpreter tool runner with a local model' \
                 'agents: Choose a coding agent' \
                 'odysseus: Open Odysseus (or terminal chat)' \
                 'freellmapi: Open FreeLLMAPI' \
@@ -1694,7 +1695,7 @@ ai() {
         )
         [ -n "$choice" ] || return 0
         action=${choice%%:*}
-        [ "$action" = "local" ] || [ "$action" = "shell" ] || [ "$action" = "nl2sh" ] || [ "$action" = "whatisit" ] \
+        [ "$action" = "local" ] || [ "$action" = "chat" ] || [ "$action" = "shell" ] || [ "$action" = "nl2sh" ] || [ "$action" = "whatisit" ] \
             || [ "$action" = "interpreter" ] || [ "$action" = "agents" ] \
             || [ "$action" = "claude" ] || [ "$action" = "copilot" ] || [ "$action" = "cursor" ] \
             || [ "$action" = "codex" ] || [ "$action" = "status" ] \
@@ -1736,26 +1737,30 @@ ai() {
                 whatisit "$@"
             fi
             ;;
-        local)
+        chat)
             models=$(ollama list 2>/dev/null | awk 'NR > 1 && $1 != "" { print $1 }')
             [ -n "$models" ] || {
                 printf '%s\n' "No Ollama models are installed or Ollama is not running." >&2
                 return 1
             }
-            model=$1
-            [ -n "$model" ] && printf '%s\n' "$models" | grep -Fxq "$model" || model=
-            if [ -z "$model" ]; then
+            model=${1:-}
+            if [ -n "$model" ]; then
+                if ! printf '%s\n' "$models" | grep -Fxq -- "$model"; then
+                    printf 'Model is not installed locally: %s\n' "$model" >&2
+                    return 2
+                fi
+                shift
+            else
                 model=$(printf '%s\n' "$models" | fzf --prompt='Local model: ' --height=40% --layout=reverse)
             fi
             [ -n "$model" ] || return 0
-            shift $(($# > 0 ? 1 : 0))
             if [ $# -gt 0 ]; then
                 ollama run "$model" "$*"
             else
                 ollama run "$model"
             fi
             ;;
-        interpreter)
+        local | interpreter)
             command -v interpreter >/dev/null 2>&1 || {
                 printf '%s\n' "Open Interpreter is not installed." >&2
                 return 1
@@ -1765,23 +1770,32 @@ ai() {
                 printf '%s\n' "No Ollama models are installed or Ollama is not running." >&2
                 return 1
             }
-            model=$1
-            [ -n "$model" ] && printf '%s\n' "$models" | grep -Fxq "$model" || model=
-            if [ -z "$model" ]; then
-                model=$(printf '%s\n' "$models" | fzf --prompt='Open Interpreter model: ' --height=40% --layout=reverse)
+            model=${1:-}
+            if [ -n "$model" ]; then
+                if ! printf '%s\n' "$models" | grep -Fxq -- "$model"; then
+                    printf 'Model is not installed locally: %s\n' "$model" >&2
+                    return 2
+                fi
+                shift
             fi
+            [ -n "$model" ] || model=$(printf '%s\n' "$models" | fzf --prompt='Tool-enabled model: ' --height=40% --layout=reverse)
             [ -n "$model" ] || return 0
-            shift $(($# > 0 ? 1 : 0))
+            if [ $# -gt 0 ]; then
+                printf '%s\n' \
+                    'Tool-enabled mode needs a live terminal so you can approve each code run.' \
+                    'Run `ai local MODEL`, then enter your request at the interpreter prompt.' \
+                    'Use `ai chat MODEL PROMPT...` for a one-shot chat without OS tools.' >&2
+                return 2
+            fi
             interpreter_model=$model
             case "$interpreter_model" in
                 ollama/*) ;;
                 *) interpreter_model="ollama/$interpreter_model" ;;
             esac
-            if [ $# -gt 0 ]; then
-                printf '%s\n' "$*" | interpreter --model "$interpreter_model" --api_base "$interpreter_api_base" --api_key ollama --offline
-            else
-                interpreter --model "$interpreter_model" --api_base "$interpreter_api_base" --api_key ollama --offline
-            fi
+            interpreter --model "$interpreter_model" \
+                --api_base "$interpreter_api_base" \
+                --api_key ollama --offline --max_tokens 512 \
+                --custom_instructions 'Use Python or shell code to inspect this computer when asked about local files or system state; do not claim you lack access. Resolve Linux paths instead of assuming Windows capitalization: check xdg-user-dir or inspect the home directory, then verify the exact path. Default to read-only inspection. Do not change files, install software, or alter services unless explicitly asked. Report only facts returned by tools; do not invent filenames, counts, or classifications. Keep the final answer concise.'
             ;;
         claude)
             command -v claude >/dev/null 2>&1 || {
@@ -1814,34 +1828,8 @@ ai() {
         odysseus)
             if [ "${1:-}" = "terminal" ] || [ "${1:-}" = "chat" ]; then
                 shift
-                command -v interpreter >/dev/null 2>&1 || {
-                    printf '%s\n' "Open Interpreter is not installed." >&2
-                    return 1
-                }
-                models=$(ollama list 2>/dev/null | awk 'NR > 1 && $1 != "" { print $1 }')
-                [ -n "$models" ] || {
-                    printf '%s\n' "No Ollama models are installed or Ollama is not running." >&2
-                    return 1
-                }
-                model=${1:-}
-                [ -n "$model" ] && printf '%s\n' "$models" | grep -Fxq "$model" || model=
-                if [ -z "$model" ]; then
-                    model=$(printf '%s\n' "$models" | fzf --prompt='Odysseus terminal model: ' --height=40% --layout=reverse)
-                else
-                    shift
-                fi
-                [ -n "$model" ] || return 0
-                interpreter_model=$model
-                case "$interpreter_model" in
-                    ollama/*) ;;
-                    *) interpreter_model="ollama/$interpreter_model" ;;
-                esac
-                if [ $# -gt 0 ]; then
-                    printf '%s\n' "$*" | interpreter --model "$interpreter_model" --api_base "$interpreter_api_base" --api_key ollama --offline
-                else
-                    interpreter --model "$interpreter_model" --api_base "$interpreter_api_base" --api_key ollama --offline
-                fi
-                return
+                ai local "$@"
+                return $?
             fi
             url=http://127.0.0.1:7000
             command -v xdg-open >/dev/null 2>&1 || {
@@ -2377,12 +2365,13 @@ EOF
             ;;
         help | *)
             printf '%s\n' \
-                'Usage: ai [local [MODEL] [PROMPT]|shell [REQUEST]|interpreter [MODEL] [PROMPT]|agents|claude|copilot|cursor|codex|odysseus|freellmapi|remote|health [deep]|status|models|logs|on|start|stop|autostart|help]' \
+                'Usage: ai [local [MODEL]|chat [MODEL] [PROMPT...]|shell [REQUEST]|interpreter [MODEL]|agents|claude|copilot|cursor|codex|odysseus|freellmapi|remote|health [deep]|status|models|logs|on|start|stop|autostart|help]' \
                 'Examples:' \
                 '  ai                         Choose a tool interactively' \
-                '  ai local qwen3:14b        Run a local model' \
+                '  ai local qwen3-coder:30b  Use a local model with OS tools; approve each code run' \
+                '  ai chat qwen3:14b        Plain local chat without OS tools' \
                 '  ai shell find files larger than 100MB  Generate a shell command' \
-                '  ai interpreter qwen3:14b  Run Open Interpreter with a local model' \
+                '  ai interpreter qwen3:14b  Alias for tool-enabled local mode' \
                 '  ai agents                 Choose a coding agent' \
                 '  ai claude                 Start Claude Code' \
                 '  ai cursor                 Start Cursor Agent' \
