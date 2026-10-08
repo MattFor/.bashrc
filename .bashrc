@@ -1459,10 +1459,13 @@ rustdoc_search() {
 alias rdoc='rustdoc_search'
 
 ai() {
-    local action model selected models choice root gateway ollama_pid odysseus_pid pid i url remote_host remote_service remote_port ts_hostname remote_prompt remote_response interpreter_api_base
+    local action model interpreter_model selected models choice root gateway ollama_pid odysseus_pid pid i url remote_host remote_service remote_port ts_hostname remote_prompt remote_response interpreter_api_base
     root=${ODYSSEUS_ROOT:-"$HOME/applications/odysseus"}
     gateway=${FREELLMAPI_ROOT:-"$HOME/applications/freellmapi"}
-    interpreter_api_base=${OPEN_INTERPRETER_API_BASE:-http://127.0.0.1:11434/v1}
+    interpreter_api_base=${OPEN_INTERPRETER_API_BASE:-${OLLAMA_HOST:-http://127.0.0.1:11434}}
+    interpreter_api_base=${interpreter_api_base%/}
+    interpreter_api_base=${interpreter_api_base%/v1}
+    interpreter_api_base=${interpreter_api_base%/}
 
     if [ $# -gt 0 ]; then
         action=$1
@@ -1552,10 +1555,15 @@ ai() {
             fi
             [ -n "$model" ] || return 0
             shift $(($# > 0 ? 1 : 0))
+            interpreter_model=$model
+            case "$interpreter_model" in
+                ollama/*) ;;
+                *) interpreter_model="ollama/$interpreter_model" ;;
+            esac
             if [ $# -gt 0 ]; then
-                printf '%s\n' "$*" | interpreter --model "$model" --api_base "$interpreter_api_base" --api_key ollama --offline
+                printf '%s\n' "$*" | interpreter --model "$interpreter_model" --api_base "$interpreter_api_base" --api_key ollama --offline
             else
-                interpreter --model "$model" --api_base "$interpreter_api_base" --api_key ollama --offline
+                interpreter --model "$interpreter_model" --api_base "$interpreter_api_base" --api_key ollama --offline
             fi
             ;;
         claude)
@@ -1606,10 +1614,15 @@ ai() {
                     shift
                 fi
                 [ -n "$model" ] || return 0
+                interpreter_model=$model
+                case "$interpreter_model" in
+                    ollama/*) ;;
+                    *) interpreter_model="ollama/$interpreter_model" ;;
+                esac
                 if [ $# -gt 0 ]; then
-                    printf '%s\n' "$*" | interpreter --model "$model" --api_base "$interpreter_api_base" --api_key ollama --offline
+                    printf '%s\n' "$*" | interpreter --model "$interpreter_model" --api_base "$interpreter_api_base" --api_key ollama --offline
                 else
-                    interpreter --model "$model" --api_base "$interpreter_api_base" --api_key ollama --offline
+                    interpreter --model "$interpreter_model" --api_base "$interpreter_api_base" --api_key ollama --offline
                 fi
                 return
             fi
@@ -1951,7 +1964,7 @@ EOF
                 if [ -f "$ollama_pid" ] && kill -0 "$(cat "$ollama_pid")" 2>/dev/null; then
                     :
                 else
-                    nohup ollama serve >/tmp/ollama-serve.log 2>&1 &
+                    OLLAMA_LOAD_TIMEOUT=15m nohup ollama serve >/tmp/ollama-serve.log 2>&1 &
                     echo $! >"$ollama_pid"
                 fi
             fi
@@ -2470,7 +2483,7 @@ cd() {
 shopt -s autocd
 
 # Created by `pipx` on 2026-03-23 13:01:31
-export PATH="$PATH:$HOME/.local/bin"
+export PATH="$HOME/.local/bin:$PATH"
 
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
