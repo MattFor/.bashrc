@@ -1459,7 +1459,7 @@ rustdoc_search() {
 alias rdoc='rustdoc_search'
 
 ai() {
-    local action model selected models choice root gateway ollama_pid odysseus_pid pid i url
+    local action model selected models choice root gateway ollama_pid odysseus_pid pid i url remote_host remote_service remote_port ts_hostname
     root=${ODYSSEUS_ROOT:-"$HOME/applications/odysseus"}
     gateway=${FREELLMAPI_ROOT:-"$HOME/applications/freellmapi"}
 
@@ -1480,6 +1480,7 @@ ai() {
                 'codex: OpenAI Codex CLI' \
                 'odysseus: Open Odysseus' \
                 'freellmapi: Open FreeLLMAPI' \
+                'remote: Connect to another Tailscale machine' \
                 'health: Check every local AI service, endpoint, and model' \
                 'status: Check local AI services' \
                 'models: List installed Ollama models' \
@@ -1496,6 +1497,7 @@ ai() {
             || [ "$action" = "cursor" ] || [ "$action" = "codex" ] || [ "$action" = "status" ] \
             || [ "$action" = "odysseus" ] || [ "$action" = "freellmapi" ] || [ "$action" = "health" ] \
             || [ "$action" = "models" ] \
+            || [ "$action" = "remote" ] \
             || [ "$action" = "logs" ] || [ "$action" = "start" ] || [ "$action" = "stop" ] \
             || [ "$action" = "autostart" ] || action=help
     fi
@@ -1563,6 +1565,79 @@ ai() {
                 return 0
             }
             xdg-open "$url" >/dev/null 2>&1 &
+            ;;
+        remote)
+            if ! command -v tailscale >/dev/null 2>&1; then
+                printf '%s\n' "Tailscale is not installed." >&2
+                return 1
+            fi
+            case "${1:-help}" in
+                setup)
+                    ts_hostname=${TS_HOSTNAME:-${HOSTNAME%%.*}}
+                    [ -n "$ts_hostname" ] || ts_hostname=$(hostname)
+                    printf '%s\n' \
+                        'On each machine, install Tailscale and sign in:' \
+                        "  sudo tailscale up --ssh --hostname=$ts_hostname" \
+                        "This machine will use the hostname: $ts_hostname" \
+                        'Then connect by name without tracking IP addresses:' \
+                        '  ai remote ssh <machine-name>' \
+                        'List visible machines with:' \
+                        '  ai remote status'
+                    ;;
+                status)
+                    sudo tailscale status
+                    ;;
+                ssh | connect)
+                    remote_host=$2
+                    [ -n "$remote_host" ] || {
+                        printf '%s\n' "Usage: ai remote ssh <machine> [command...]" >&2
+                        return 2
+                    }
+                    shift 2
+                    if [ $# -gt 0 ]; then
+                        tailscale ssh "$remote_host" "$@"
+                    else
+                        tailscale ssh "$remote_host"
+                    fi
+                    ;;
+                tunnel)
+                    remote_host=$2
+                    remote_service=$3
+                    [ -n "$remote_host" ] && [ -n "$remote_service" ] || {
+                        printf '%s\n' "Usage: ai remote tunnel <machine> <ollama|odysseus|freellmapi|PORT> [local-port]" >&2
+                        return 2
+                    }
+                    case "$remote_service" in
+                        ollama) remote_port=11434 ;;
+                        odysseus) remote_port=7000 ;;
+                        freellmapi) remote_port=3001 ;;
+                        ''|*[!0-9]*) 
+                            printf '%s\n' "Unknown service: $remote_service" >&2
+                            return 2
+                            ;;
+                        *) remote_port=$remote_service ;;
+                    esac
+                    remote_port=${4:-$remote_port}
+                    case "$remote_port" in
+                        ''|*[!0-9]*)
+                            printf '%s\n' "Local port must be numeric." >&2
+                            return 2
+                            ;;
+                    esac
+                    printf '%s\n' "Forwarding 127.0.0.1:$remote_port to $remote_host:127.0.0.1:$remote_port; press Ctrl-C to stop."
+                    tailscale ssh "$remote_host" -N -L "$remote_port:127.0.0.1:$remote_port"
+                    ;;
+                help | *)
+                    printf '%s\n' \
+                        'Usage: ai remote [setup|status|ssh|tunnel]' \
+                        '  ai remote setup                         Show one-time Tailscale setup' \
+                        '  ai remote status                        List machines and MagicDNS names' \
+                        '  ai remote ssh <machine> [command...]    Open an SSH session by name' \
+                        '  ai remote tunnel <machine> ollama       Tunnel remote Ollama to local port 11434' \
+                        '  ai remote tunnel <machine> odysseus     Tunnel remote Odysseus to local port 7000' \
+                        '  ai remote tunnel <machine> freellmapi   Tunnel remote FreeLLMAPI to local port 3001'
+                    ;;
+            esac
             ;;
         models)
             ollama list
@@ -1638,6 +1713,12 @@ EOF
             return "$health_failed"
             ;;
         status)
+            printf '%-14s' "Tailscale"
+            if command -v tailscale >/dev/null 2>&1 && sudo tailscale status >/dev/null 2>&1; then
+                printf '%s\n' "ready"
+            else
+                printf '%s\n' "offline"
+            fi
             printf '%-14s' "Ollama"
             curl -fsS --max-time 3 http://127.0.0.1:11434/api/tags >/dev/null && printf '%s\n' "ready" || printf '%s\n' "offline"
             printf '%-14s' "Odysseus"
@@ -1664,6 +1745,25 @@ EOF
             esac
             ;;
         start)
+            if [ "${1:-}" = "tailscale" ]; then
+                command -v tailscale >/dev/null 2>&1 || {
+                    printf '%s\n' "Tailscale is not installed." >&2
+                    return 1
+                }
+                if [ -d /etc/sv/tailscaled ] && [ ! -e /var/service/tailscaled ]; then
+                    sudo ln -s /etc/sv/tailscaled /var/service/tailscaled || return 1
+                fi
+                if [ -e /var/service/tailscaled ]; then
+                    sudo sv up tailscaled >/dev/null 2>&1 || true
+                elif ! pgrep -x tailscaled >/dev/null 2>&1; then
+                    printf '%s\n' "Tailscale runit service is unavailable." >&2
+                    return 1
+                fi
+                ts_hostname=${TS_HOSTNAME:-${HOSTNAME%%.*}}
+                [ -n "$ts_hostname" ] || ts_hostname=$(hostname)
+                sudo tailscale up --ssh --hostname="$ts_hostname"
+                return $?
+            fi
             if [ "${1:-}" = "docker" ]; then
                 if [ -d /etc/sv/docker ] && [ ! -e /var/service/docker ]; then
                     sudo ln -s /etc/sv/docker /var/service/docker || return 1
@@ -1707,6 +1807,19 @@ EOF
             fi
             ;;
         stop)
+            if [ "${1:-}" = "tailscale" ]; then
+                command -v tailscale >/dev/null 2>&1 || {
+                    printf '%s\n' "Tailscale is not installed." >&2
+                    return 1
+                }
+                sudo tailscale down >/dev/null 2>&1 || true
+                if [ -e /var/service/tailscaled ]; then
+                    sudo sv down tailscaled
+                else
+                    printf '%s\n' "Tailscale service is already stopped."
+                fi
+                return 0
+            fi
             if [ "${1:-}" = "docker" ]; then
                 if [ -e /var/service/docker ]; then
                     sudo sv down docker
@@ -1764,7 +1877,7 @@ EOF
             ;;
         help | *)
             printf '%s\n' \
-                'Usage: ai [local [MODEL] [PROMPT]|claude|copilot|cursor|codex|odysseus|freellmapi|health [deep]|status|models|logs|start|stop|autostart|help]' \
+                'Usage: ai [local [MODEL] [PROMPT]|claude|copilot|cursor|codex|odysseus|freellmapi|remote|health [deep]|status|models|logs|start|stop|autostart|help]' \
                 'Examples:' \
                 '  ai                         Choose a tool interactively' \
                 '  ai local qwen3:14b        Run a local model' \
@@ -1774,14 +1887,20 @@ EOF
                 '  ai codex                  Start OpenAI Codex CLI' \
                 '  ai odysseus               Open the Odysseus web UI' \
                 '  ai freellmapi             Open the FreeLLMAPI dashboard' \
+                '  ai remote setup           Show Tailscale setup instructions' \
+                '  ai remote status         List remote machines by name' \
+                '  ai remote ssh laptop     Connect to a machine without its IP' \
+                '  ai remote tunnel laptop ollama  Use a remote Ollama locally' \
                 '  ai health                 Check services, containers, endpoints, and models' \
                 '  ai health deep           Also run one small inference request per model' \
                 '  ai status                 Check local services and models' \
                 '  ai logs all               Show recent service logs' \
                 '  ai start                  Start the AI stack in the background' \
                 '  ai start docker           Start Docker only' \
+                '  ai start tailscale       Start Tailscale using this machine name' \
                 '  ai stop                   Stop the AI stack' \
                 '  ai stop docker            Stop Docker only' \
+                '  ai stop tailscale        Stop Tailscale' \
                 '  ai autostart enable      Enable Docker autostart' \
                 '  ai autostart disable     Remove Docker autostart'
             ;;
