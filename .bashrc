@@ -1600,6 +1600,36 @@ ai() {
                         tailscale ssh "$remote_host"
                     fi
                     ;;
+                agent)
+                    remote_host=$2
+                    local remote_agent=$3 remote_dir=$4 remote_command remote_executable quoted_arg
+                    [ -n "$remote_host" ] && [ -n "$remote_agent" ] || {
+                        printf '%s\n' "Usage: ai remote agent <machine> <claude|copilot|cursor|codex> [directory] [args...]" >&2
+                        return 2
+                    }
+                    case "$remote_agent" in
+                        claude|copilot|codex) remote_executable=$remote_agent ;;
+                        cursor) remote_executable=agent ;;
+                        *)
+                            printf '%s\n' "Unknown remote agent: $remote_agent" >&2
+                            return 2
+                            ;;
+                    esac
+                    remote_dir=${remote_dir:-"$HOME"}
+                    remote_command='export PATH="$HOME/.local/bin:$HOME/.bun/bin:$HOME/.config/nvm/versions/node/current/bin:$PATH"; '
+                    remote_command+='[ -r "$HOME/.config/nvm/nvm.sh" ] && . "$HOME/.config/nvm/nvm.sh" >/dev/null 2>&1 || true; '
+                    remote_command+="cd $(printf '%q' "$remote_dir") && $(printf '%q' "$remote_executable")"
+                    if [ $# -ge 4 ]; then
+                        shift 4
+                    else
+                        shift 3
+                    fi
+                    for quoted_arg in "$@"; do
+                        printf -v quoted_arg '%q' "$quoted_arg"
+                        remote_command+=" $quoted_arg"
+                    done
+                    tailscale ssh "$remote_host" "$remote_command"
+                    ;;
                 tunnel)
                     remote_host=$2
                     remote_service=$3
@@ -1681,10 +1711,11 @@ PY
                     ;;
                 help | *)
                     printf '%s\n' \
-                        'Usage: ai remote [setup|status|ssh|tunnel|local]' \
+                        'Usage: ai remote [setup|status|ssh|agent|tunnel|local]' \
                         '  ai remote setup                         Show one-time Tailscale setup' \
                         '  ai remote status                        List machines and MagicDNS names' \
                         '  ai remote ssh <machine> [command...]    Open an SSH session by name' \
+                        '  ai remote agent <machine> <agent> [dir] [args...]  Run a coding agent remotely' \
                         '  ai remote tunnel <machine> ollama       Tunnel remote Ollama to local port 11434' \
                         '  ai remote tunnel <machine> odysseus     Tunnel remote Odysseus to local port 7000' \
                         '  ai remote tunnel <machine> freellmapi   Tunnel remote FreeLLMAPI to local port 3001' \
