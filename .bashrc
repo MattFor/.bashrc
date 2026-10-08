@@ -2341,6 +2341,26 @@ tssh() {
     tailscale ssh "$target" "$@"
 }
 
+# Copy files between this computer and a Tailscale machine.
+tcopy() {
+    if [ "$#" -lt 2 ]; then
+        printf 'Usage: tcopy <source> <destination>\n' >&2
+        return 2
+    fi
+
+    rsync -ah --progress -e 'tailscale ssh' "$@"
+}
+
+# Move files between this computer and a Tailscale machine.
+tmove() {
+    if [ "$#" -lt 2 ]; then
+        printf 'Usage: tmove <source> <destination>\n' >&2
+        return 2
+    fi
+
+    rsync -ah --progress --remove-source-files -e 'tailscale ssh' "$@"
+}
+
 alias lh='du -sh *'
 alias ls='ls --color=auto'
 alias la='ls -A --color=auto'
