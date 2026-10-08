@@ -7,6 +7,9 @@
 HISTSIZE=1000000
 HISTFILESIZE=2000000
 
+sync="${SYNC_DIR:-"$HOME/sync-folder"}"
+s="$sync"
+
 # Terminal
 export TERM=xterm-256color
 
@@ -74,35 +77,46 @@ copy() {
 }
 
 imgtxt() {
-    local tmp
-    tmp=$(mktemp --suffix=.png)
+    local targets type tmp rc
 
-    xclip -selection clipboard -t image/png -o >"$tmp" || {
-        echo "No PNG image found in the clipboard."
-        rm -f "$tmp"
+    targets=$(xclip -selection clipboard -t TARGETS -o 2>/dev/null)
+    type=$(grep -m1 -x 'image/png' <<<"$targets" || grep -m1 '^image/' <<<"$targets") || {
+        echo "No image found in the clipboard." >&2
         return 1
     }
 
-    tesseract-ocr "$tmp" stdout
+    tmp=$(mktemp --suffix=.png)
+    xclip -selection clipboard -t "$type" -o | magick - "$tmp"
+
+    if [[ $(magick "$tmp" -colorspace Gray -format '%[fx:mean < 0.4]' info:) == 1 ]]; then
+        magick "$tmp" -colorspace Gray -negate -resize 200% "$tmp"
+    fi
+
+    tesseract-ocr "$tmp" stdout 2>/dev/null
+    rc=$?
     rm -f "$tmp"
+    return $rc
 }
 
 cpimgtxt() {
-    local tmp
-    tmp=$(mktemp --suffix=.png)
+    local text
+    text=$(imgtxt) || return
 
-    xclip -selection clipboard -t image/png -o >"$tmp" || {
-        echo "No PNG image found in the clipboard."
-        rm -f "$tmp"
+    if [[ $text != *[![:space:]]* ]]; then
+        echo "No text found in the image." >&2
         return 1
-    }
+    fi
 
-    tesseract-ocr "$tmp" stdout | tee >(copy >/dev/null)
-
-    rm -f "$tmp"
+    printf '%s\n' "$text"
+    printf '%s' "$text" | copy
 }
 
 hash() {
+    [[ $1 == -* ]] && {
+        builtin hash "$@"
+        return
+    }
+
     local alg="sha256"
 
     usage() {
@@ -620,7 +634,7 @@ workon() {
     activate ".venv"
 }
 
-minify() {
+minify() (
     set -Eeuo pipefail
 
     local DIST="${1:-dist}"
@@ -672,7 +686,7 @@ minify() {
 
     echo
     echo "Minified website written to $DIST/"
-}
+)
 
 gitrepo() {
     if [ -z "${1:-}" ]; then
@@ -889,20 +903,45 @@ gitpr() {
     [ "$gh_rc" -eq 0 ] && [ "$tea_rc" -eq 0 ]
 }
 
-relaxy-dl() {
-    if [ $# -lt 1 ]; then
-        echo "Usage: relaxy-dl <remote_file> [local_path]"
+rpi-up() {
+    if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+        echo "Usage: rpi-up <local_path> [remote_dir]"
+        echo "  remote_dir defaults to the Pi home; relative paths start there"
         return 1
     fi
 
-    local remote_file="$1"
+    local src="${1%/}"
     local dest="${2:-.}"
 
-    scp -O -i "$___rel_key" "$___rel_host:$___rel_base/$remote_file" "$dest"
+    if [ ! -e "$src" ]; then
+        echo "rpi-up: not found: $src" >&2
+        return 1
+    fi
+
+    tar -c -C "$(dirname -- "$src")" -- "$(basename -- "$src")" \
+        | pv -s "$(du -sb -- "$src" | cut -f1)" \
+        | $___rel_ssh "mkdir -p -- $(printf '%q' "$dest") && tar -x -C $(printf '%q' "$dest")"
 }
 
-relaxy-ls() {
-    "$___rel_ssh" "ls /home/server/relaxy-private/${1:-}"
+rpi-dl() {
+    if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+        echo "Usage: rpi-dl <remote_path> [local_dir]"
+        echo "  relative remote paths start at the Pi home (the bot is in relaxy/)"
+        return 1
+    fi
+
+    local src="${1%/}"
+    local dest="${2:-.}"
+
+    mkdir -p -- "$dest" || return 1
+
+    $___rel_ssh "cd $(printf '%q' "$(dirname -- "$src")") && tar -c -- $(printf '%q' "$(basename -- "$src")")" </dev/null \
+        | pv \
+        | tar -x -C "$dest"
+}
+
+rpi-ls() {
+    $___rel_ssh "ls ${1:-}"
 }
 
 _tar_from_stdin() {
@@ -912,133 +951,14 @@ _tar_from_stdin() {
     }
 }
 
-_llm_models() {
-    ollama list 2>/dev/null | awk 'NR > 1 && $1 != "" {print $1}'
-}
-
-_llm_ensure_server() {
-    if ollama list >/dev/null 2>&1; then
-        return 0
-    fi
-
-    nohup ollama serve >/tmp/ollama-serve.log 2>&1 &
-    local i
-    for i in $(seq 1 30); do
-        ollama list >/dev/null 2>&1 && return 0
-        sleep 1
-    done
-
-    echo "ollama server did not start. Check /tmp/ollama-serve.log" >&2
-    return 1
-}
-
-_llm_pick_model() {
-    local query="$1"
-    local models matched
-
-    models="$(_llm_models)"
-    if [ -z "$models" ]; then
-        return 1
-    fi
-
-    if command -v fzf >/dev/null 2>&1; then
-        if [ -n "$query" ]; then
-            matched="$(printf '%s\n' "$models" | fzf --query "$query" --select-1 --exit-0 2>/dev/null)"
-        else
-            matched="$(printf '%s\n' "$models" | fzf --select-1 --exit-0 2>/dev/null)"
-        fi
-        [ -n "$matched" ] && {
-            printf '%s\n' "$matched"
-            return 0
-        }
-    fi
-
-    if [ -n "$query" ]; then
-        matched="$(printf '%s\n' "$models" | awk -v q="$query" '
-      BEGIN { ql=tolower(q); best=""; }
-      {
-        l=tolower($0)
-        if (l == ql) { print; exit }
-        if (index(l, ql) == 1 && best == "") best = $0
-        else if (index(l, ql) > 0 && best == "") best = $0
-      }
-      END { if (best != "") print best }')"
-        [ -n "$matched" ] && {
-            printf '%s\n' "$matched"
-            return 0
-        }
-    fi
-
-    return 1
-}
-
-llmon() {
-    local query="$*"
-    local model
-    local models
-
-    if ! _llm_ensure_server; then
-        return 1
-    fi
-
-    models="$(_llm_models)"
-    if [ -z "$models" ]; then
-        echo "No models installed yet."
-        echo "Install one with: ollama pull <model>"
-        return 1
-    fi
-
-    if [ -z "$query" ]; then
-        echo "Installed models:"
-        printf '  %-32s %s\n' "MODEL" "LAUNCH"
-        printf '  %-32s %s\n' "-----" "------"
-        while IFS= read -r model; do
-            [ -n "$model" ] && printf '  %-32s %s\n' "$model" "ollama run $model"
-        done <<EOF
-$models
-EOF
-        echo
-        echo "Use: llmon <part-of-name>"
-        echo "Example: llmon deepseek"
-        return 0
-    fi
-
-    model="$(_llm_pick_model "$query")"
-    if [ -z "$model" ]; then
-        echo "No installed model matched: $query" >&2
-        echo
-        echo "Installed models:"
-        printf '%s\n' "$models" | sed 's/^/  - /'
-        return 1
-    fi
-
-    echo "Launching: ollama run $model"
-    ollama run "$model"
-}
-
-llmoff() {
-    local running
-
-    running="$(ollama ps 2>/dev/null | awk 'NR > 1 && $1 != "" {print $1}')"
-    if [ -n "$running" ]; then
-        while IFS= read -r model; do
-            [ -n "$model" ] && ollama stop "$model" >/dev/null 2>&1
-        done <<EOF
-$running
-EOF
-    fi
-
-    # Then stop the server.
-    pkill -x ollama >/dev/null 2>&1 || true
-
-    echo "Ollama stopped."
-}
-
 c() {
     if [ $# -eq 0 ]; then
         echo "Usage: c [v|vv|vvv|sv|svv|svvv|dbg|sdbg] file1.cpp [file2.cpp ...]"
         return 1
     fi
+
+    local search verbosity dbg token rest main output std_flag
+    local -a files common_opts driver_verbose linker_verbose warn_flags extra_flags sanitizer_flags debug_flags cmd
 
     search=false
     verbosity=1
@@ -1538,170 +1458,428 @@ rustdoc_search() {
 
 alias rdoc='rustdoc_search'
 
-dockeron() {
-    if [ -d /etc/sv/docker ] && [ ! -e /var/service/docker ]; then
-        sudo ln -s /etc/sv/docker /var/service/ || true
+ai() {
+    local action model selected models choice root gateway ollama_pid odysseus_pid pid i url
+    root=${ODYSSEUS_ROOT:-"$HOME/applications/odysseus"}
+    gateway=${FREELLMAPI_ROOT:-"$HOME/applications/freellmapi"}
+
+    if [ $# -gt 0 ]; then
+        action=$1
+        shift
+        if ollama list 2>/dev/null | awk 'NR > 1 { print $1 }' | grep -Fxq "$action"; then
+            set -- "$action" "$@"
+            action=local
+        fi
+    else
+        choice=$(
+            printf '%s\n' \
+                'local: Choose an Ollama model' \
+                'claude: Claude Code' \
+                'copilot: GitHub Copilot CLI' \
+                'cursor: Cursor Agent' \
+                'codex: OpenAI Codex CLI' \
+                'odysseus: Open Odysseus' \
+                'freellmapi: Open FreeLLMAPI' \
+                'health: Check every local AI service, endpoint, and model' \
+                'status: Check local AI services' \
+                'models: List installed Ollama models' \
+                'logs: Show recent AI service logs' \
+                'start: Start the local AI stack' \
+                'stop: Stop the local AI stack' \
+                'autostart: Manage Docker autostart' \
+                'help: Show ai usage' \
+                | fzf --prompt='AI command: ' --height=55% --layout=reverse
+        )
+        [ -n "$choice" ] || return 0
+        action=${choice%%:*}
+        [ "$action" = "local" ] || [ "$action" = "claude" ] || [ "$action" = "copilot" ] \
+            || [ "$action" = "cursor" ] || [ "$action" = "codex" ] || [ "$action" = "status" ] \
+            || [ "$action" = "odysseus" ] || [ "$action" = "freellmapi" ] || [ "$action" = "health" ] \
+            || [ "$action" = "models" ] \
+            || [ "$action" = "logs" ] || [ "$action" = "start" ] || [ "$action" = "stop" ] \
+            || [ "$action" = "autostart" ] || action=help
     fi
 
-    echo "Starting Docker service..."
-    sudo sv up docker || true
-
-    echo "dockeron: Docker started and enabled on boot."
-}
-
-dockeroff() {
-    echo "Stopping Docker service..."
-
-    if command -v docker >/dev/null 2>&1; then
-        sudo docker ps -q | xargs -r sudo docker stop
-    fi
-
-    if [ -e /var/service/docker ]; then
-        sudo sv down docker || true
-        sudo rm -f /var/service/docker
-    fi
-
-    echo "dockeroff: Docker stopped and disabled from startup."
+    case "$action" in
+        local)
+            models=$(ollama list 2>/dev/null | awk 'NR > 1 && $1 != "" { print $1 }')
+            [ -n "$models" ] || {
+                printf '%s\n' "No Ollama models are installed or Ollama is not running." >&2
+                return 1
+            }
+            model=$1
+            [ -n "$model" ] && printf '%s\n' "$models" | grep -Fxq "$model" || model=
+            if [ -z "$model" ]; then
+                model=$(printf '%s\n' "$models" | fzf --prompt='Local model: ' --height=40% --layout=reverse)
+            fi
+            [ -n "$model" ] || return 0
+            shift $(($# > 0 ? 1 : 0))
+            if [ $# -gt 0 ]; then
+                ollama run "$model" "$*"
+            else
+                ollama run "$model"
+            fi
+            ;;
+        claude)
+            command -v claude >/dev/null 2>&1 || {
+                printf '%s\n' "Claude Code is not installed." >&2
+                return 1
+            }
+            claude "$@"
+            ;;
+        copilot)
+            command -v copilot >/dev/null 2>&1 || {
+                printf '%s\n' "Copilot CLI is not installed." >&2
+                return 1
+            }
+            copilot "$@"
+            ;;
+        cursor)
+            command -v agent >/dev/null 2>&1 || {
+                printf '%s\n' "Cursor Agent CLI is not installed." >&2
+                return 1
+            }
+            agent "$@"
+            ;;
+        codex)
+            command -v codex >/dev/null 2>&1 || {
+                printf '%s\n' "Codex CLI is not installed." >&2
+                return 1
+            }
+            codex "$@"
+            ;;
+        odysseus)
+            url=http://127.0.0.1:7000
+            command -v xdg-open >/dev/null 2>&1 || {
+                printf '%s\n' "$url"
+                return 0
+            }
+            xdg-open "$url" >/dev/null 2>&1 &
+            ;;
+        freellmapi)
+            url=http://127.0.0.1:3001
+            command -v xdg-open >/dev/null 2>&1 || {
+                printf '%s\n' "$url"
+                return 0
+            }
+            xdg-open "$url" >/dev/null 2>&1 &
+            ;;
+        models)
+            ollama list
+            ;;
+        health)
+            local health_failed=0 health_mode=${1:-shallow} health_model
+            printf '%s\n' 'AI health check'
+            printf '%-28s' 'Ollama HTTP API'
+            if curl -fsS --max-time 3 http://127.0.0.1:11434/api/tags >/dev/null; then
+                printf '%s\n' 'OK'
+            else
+                printf '%s\n' 'FAIL'
+                health_failed=1
+            fi
+            printf '%-28s' 'Ollama OpenAI endpoint'
+            if curl -fsS --max-time 3 http://127.0.0.1:11434/v1/models >/dev/null; then
+                printf '%s\n' 'OK'
+            else
+                printf '%s\n' 'FAIL'
+                health_failed=1
+            fi
+            printf '%-28s' 'Odysseus HTTP API'
+            if curl -fsS --max-time 3 http://127.0.0.1:7000/health >/dev/null; then
+                printf '%s\n' 'OK'
+            else
+                printf '%s\n' 'FAIL'
+                health_failed=1
+            fi
+            printf '%-28s' 'FreeLLMAPI HTTP API'
+            if curl -fsS --max-time 3 http://127.0.0.1:3001/api/ping >/dev/null; then
+                printf '%s\n' 'OK'
+            else
+                printf '%s\n' 'FAIL'
+                health_failed=1
+            fi
+            printf '%s\n' 'Docker containers:'
+            docker compose -f "$root/docker-compose.yml" ps 2>/dev/null || health_failed=1
+            docker compose -f "$gateway/docker-compose.yml" ps 2>/dev/null || health_failed=1
+            printf '%s\n' 'Ollama models:'
+            models=$(ollama list 2>/dev/null | awk 'NR > 1 && $1 != "" { print $1 }')
+            if [ -z "$models" ]; then
+                printf '%s\n' 'No models found'
+                health_failed=1
+            else
+                while IFS= read -r health_model; do
+                    [ -n "$health_model" ] || continue
+                    printf '%-28s' "$health_model"
+                    if curl -fsS --max-time 10 http://127.0.0.1:11434/api/show \
+                        -H 'Content-Type: application/json' \
+                        -d "{\"name\":\"$health_model\"}" >/dev/null; then
+                        printf '%s\n' 'available'
+                    else
+                        printf '%s\n' 'FAIL'
+                        health_failed=1
+                    fi
+                    if [ "$health_mode" = "deep" ]; then
+                        printf '%-28s' "$health_model inference"
+                        if curl -fsS --max-time 120 http://127.0.0.1:11434/api/chat \
+                            -H 'Content-Type: application/json' \
+                            -d "{\"model\":\"$health_model\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply only with OK.\"}],\"stream\":false,\"think\":false}" \
+                            | grep -q '"content"'; then
+                            printf '%s\n' 'OK'
+                        else
+                            printf '%s\n' 'FAIL'
+                            health_failed=1
+                        fi
+                    fi
+                done <<EOF
+$models
+EOF
+            fi
+            [ "$health_mode" = "deep" ] || printf '%s\n' 'Use `ai health deep` to run a small inference request through every local model.'
+            return "$health_failed"
+            ;;
+        status)
+            printf '%-14s' "Ollama"
+            curl -fsS --max-time 3 http://127.0.0.1:11434/api/tags >/dev/null && printf '%s\n' "ready" || printf '%s\n' "offline"
+            printf '%-14s' "Odysseus"
+            curl -fsS --max-time 3 http://127.0.0.1:7000/health >/dev/null && printf '%s\n' "ready" || printf '%s\n' "offline"
+            printf '%-14s' "FreeLLMAPI"
+            curl -fsS --max-time 3 http://127.0.0.1:3001/api/ping >/dev/null && printf '%s\n' "ready" || printf '%s\n' "offline"
+            printf '%s\n' "Installed models:"
+            ollama list 2>/dev/null || true
+            ;;
+        logs)
+            case "${1:-all}" in
+                ollama) tail -n 80 /tmp/ollama-serve.log 2>/dev/null || printf '%s\n' "No Ollama log found." ;;
+                odysseus) tail -n 80 /tmp/odysseus.log 2>/dev/null || printf '%s\n' "No Odysseus log found." ;;
+                freellmapi) docker compose -f "$gateway/docker-compose.yml" logs --tail=80 --no-color freellmapi ;;
+                all)
+                    ai logs ollama
+                    ai logs odysseus
+                    ai logs freellmapi
+                    ;;
+                *)
+                    printf '%s\n' "Usage: ai logs [ollama|odysseus|freellmapi|all]" >&2
+                    return 2
+                    ;;
+            esac
+            ;;
+        start)
+            if [ "${1:-}" = "docker" ]; then
+                if [ -d /etc/sv/docker ] && [ ! -e /var/service/docker ]; then
+                    sudo ln -s /etc/sv/docker /var/service/docker || return 1
+                fi
+                sudo sv up docker
+                return $?
+            fi
+            ollama_pid=/tmp/ollama-serve.pid
+            odysseus_pid=/tmp/odysseus.pid
+            if [ -d /etc/sv/docker ] && [ ! -e /var/service/docker ]; then
+                sudo ln -s /etc/sv/docker /var/service/docker || return 1
+            fi
+            sudo sv up docker || return 1
+            for i in $(seq 1 30); do
+                docker info >/dev/null 2>&1 && break
+                sleep 1
+            done
+            docker info >/dev/null 2>&1 || {
+                printf '%s\n' "Docker did not become ready." >&2
+                return 1
+            }
+            (cd "$root" && docker compose up -d chromadb searxng ntfy) || return 1
+            (cd "$gateway" && docker compose up -d freellmapi) || return 1
+            if ! ollama list >/dev/null 2>&1; then
+                if [ -f "$ollama_pid" ] && kill -0 "$(cat "$ollama_pid")" 2>/dev/null; then
+                    :
+                else
+                    nohup ollama serve >/tmp/ollama-serve.log 2>&1 &
+                    echo $! >"$ollama_pid"
+                fi
+            fi
+            if [ -f "$odysseus_pid" ] && kill -0 "$(cat "$odysseus_pid")" 2>/dev/null; then
+                printf '%s\n' "Odysseus is already running."
+            else
+                (
+                    cd "$root" || exit 1
+                    nohup .venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 7000 >/tmp/odysseus.log 2>&1 &
+                    echo $! >"$odysseus_pid"
+                )
+                printf '%s\n' "Odysseus started in the background."
+            fi
+            ;;
+        stop)
+            if [ "${1:-}" = "docker" ]; then
+                if [ -e /var/service/docker ]; then
+                    sudo sv down docker
+                else
+                    printf '%s\n' "Docker service is already stopped."
+                fi
+                return 0
+            fi
+            ollama_pid=/tmp/ollama-serve.pid
+            odysseus_pid=/tmp/odysseus.pid
+            if [ -f "$odysseus_pid" ]; then
+                pid=$(cat "$odysseus_pid")
+                kill "$pid" 2>/dev/null || true
+                rm -f "$odysseus_pid"
+            fi
+            if [ -f "$ollama_pid" ]; then
+                pid=$(cat "$ollama_pid")
+                kill "$pid" 2>/dev/null || true
+                rm -f "$ollama_pid"
+            fi
+            (cd "$root" && docker compose stop chromadb searxng ntfy >/dev/null 2>&1 || true)
+            (cd "$gateway" && docker compose stop freellmapi >/dev/null 2>&1 || true)
+            sudo sv down docker >/dev/null 2>&1 || true
+            ;;
+        autostart)
+            case "${1:-status}" in
+                enable | on)
+                    [ -d /etc/sv/docker ] || {
+                        printf '%s\n' "Docker runit service not found." >&2
+                        return 1
+                    }
+                    [ -e /var/service/docker ] || sudo ln -s /etc/sv/docker /var/service/docker
+                    sudo sv up docker
+                    printf '%s\n' "Docker autostart enabled."
+                    ;;
+                disable | off | remove)
+                    if [ -e /var/service/docker ]; then
+                        sudo sv down docker >/dev/null 2>&1 || true
+                        sudo rm -f /var/service/docker
+                    fi
+                    printf '%s\n' "Docker autostart disabled."
+                    ;;
+                status)
+                    if [ -e /var/service/docker ]; then
+                        printf '%s\n' "Docker autostart: enabled"
+                    else
+                        printf '%s\n' "Docker autostart: disabled"
+                    fi
+                    ;;
+                *)
+                    printf '%s\n' "Usage: ai autostart [enable|disable|status]" >&2
+                    return 2
+                    ;;
+            esac
+            ;;
+        help | *)
+            printf '%s\n' \
+                'Usage: ai [local [MODEL] [PROMPT]|claude|copilot|cursor|codex|odysseus|freellmapi|health [deep]|status|models|logs|start|stop|autostart|help]' \
+                'Examples:' \
+                '  ai                         Choose a tool interactively' \
+                '  ai local qwen3:14b        Run a local model' \
+                '  ai claude                 Start Claude Code' \
+                '  ai cursor                 Start Cursor Agent' \
+                '  ai copilot                Start GitHub Copilot CLI' \
+                '  ai codex                  Start OpenAI Codex CLI' \
+                '  ai odysseus               Open the Odysseus web UI' \
+                '  ai freellmapi             Open the FreeLLMAPI dashboard' \
+                '  ai health                 Check services, containers, endpoints, and models' \
+                '  ai health deep           Also run one small inference request per model' \
+                '  ai status                 Check local services and models' \
+                '  ai logs all               Show recent service logs' \
+                '  ai start                  Start the AI stack in the background' \
+                '  ai start docker           Start Docker only' \
+                '  ai stop                   Stop the AI stack' \
+                '  ai stop docker            Stop Docker only' \
+                '  ai autostart enable      Enable Docker autostart' \
+                '  ai autostart disable     Remove Docker autostart'
+            ;;
+    esac
 }
 
 ### Bluetooth
 
-btup() {
-    if [ -d /etc/sv/dbus ] && [ ! -e /var/service/dbus ]; then
-        sudo ln -s /etc/sv/dbus /var/service/ || true
-    fi
-    if [ -d /etc/sv/bluetoothd ] && [ ! -e /var/service/bluetoothd ]; then
-        sudo ln -s /etc/sv/bluetoothd /var/service/ || true
-    fi
-
-    echo "Starting dbus and bluetoothd..."
-    if [ -e /var/service/dbus ]; then sudo sv up dbus || true; fi
-    if [ -e /var/service/bluetoothd ]; then sudo sv up bluetoothd || true; fi
-
-    # unblock and power on
-    command -v rfkill >/dev/null 2>&1 && sudo rfkill unblock bluetooth || true
-    if command -v bluetoothctl >/dev/null 2>&1; then
-        printf 'power on\nagent on\ndefault-agent\nquit\n' | sudo bluetoothctl >/dev/null 2>&1 || true
-    fi
-    command -v hciconfig >/dev/null 2>&1 && sudo hciconfig hci0 up >/dev/null 2>&1 || true
-
-    echo "btup: started bluetoothd and requested adapter power-on."
-    echo "Use 'bluetoothctl' to pair/connect (or Blueman for GUI)."
+bt() {
+    local action="${1:-status}"
+    case "$action" in
+        on | up | start)
+            for svc in dbus bluetoothd; do
+                if [ -d "/etc/sv/$svc" ] && [ ! -e "/var/service/$svc" ]; then
+                    sudo ln -s "/etc/sv/$svc" "/var/service/$svc"
+                fi
+                [ -e "/var/service/$svc" ] && sudo sv up "$svc"
+            done
+            command -v rfkill >/dev/null 2>&1 && sudo rfkill unblock bluetooth || true
+            command -v bluetoothctl >/dev/null 2>&1 \
+                && printf 'power on\nagent on\ndefault-agent\nquit\n' | sudo bluetoothctl >/dev/null 2>&1 || true
+            command -v hciconfig >/dev/null 2>&1 && sudo hciconfig hci0 up >/dev/null 2>&1 || true
+            printf '%s\n' "Bluetooth started."
+            ;;
+        off | down | stop)
+            command -v bluetoothctl >/dev/null 2>&1 \
+                && printf 'disconnect\npower off\nquit\n' | sudo bluetoothctl --timeout 3 >/dev/null 2>&1 || true
+            command -v hciconfig >/dev/null 2>&1 && sudo hciconfig hci0 down >/dev/null 2>&1 || true
+            command -v rfkill >/dev/null 2>&1 && sudo rfkill block bluetooth || true
+            if [ -e /var/service/bluetoothd ]; then
+                sudo sv down bluetoothd
+                sudo rm -f /var/service/bluetoothd
+            fi
+            printf '%s\n' "Bluetooth stopped and disabled."
+            ;;
+        status)
+            printf '%-14s' "dbus"
+            sv status dbus 2>/dev/null || printf '%s\n' "unavailable"
+            printf '%-14s' "bluetoothd"
+            sv status bluetoothd 2>/dev/null || printf '%s\n' "unavailable"
+            command -v rfkill >/dev/null 2>&1 && rfkill list bluetooth 2>/dev/null | grep -E 'Soft blocked|Hard blocked' || true
+            ;;
+        *)
+            printf '%s\n' "Usage: bt [on|off|status]" >&2
+            return 2
+            ;;
+    esac
 }
 
-btdown() {
-    echo "Powering down bluetooth..."
-
-    if sv status bluetoothd 2>/dev/null | grep -q run; then
-        printf 'disconnect\npower off\nquit\n' | sudo bluetoothctl --timeout 3 >/dev/null 2>&1 || true
-    fi
-
-    if ip link show hci0 >/dev/null 2>&1; then
-        sudo hciconfig hci0 down >/dev/null 2>&1 || true
-    fi
-
-    command -v rfkill >/dev/null 2>&1 && sudo rfkill block bluetooth || true
-
-    if [ -e /var/service/bluetoothd ]; then
-        sudo sv down bluetoothd || true
-        sudo rm -f /var/service/bluetoothd
-    fi
-
-    echo "btdown: bluetooth powered off, service stopped, and disabled."
-}
+btup() { bt on; }
+btdown() { bt off; }
 
 ### Virtualisation utilties
 
-virtup() {
-    for svc in libvirtd virtlogd virtlockd; do
-        if [ -d "/etc/sv/$svc" ] && [ ! -e "/var/service/$svc" ]; then
-            sudo ln -s "/etc/sv/$svc" /var/service/ || true
-        fi
-    done
-
-    echo "Ensuring /run/libvirt exists..."
-    sudo mkdir -p /run/libvirt || true
-    sudo chown root:root /run/libvirt || true
-
-    if [ -e /var/service/libvirtd ]; then
-        echo "Starting libvirtd (runit)..."
-        sudo sv up libvirtd || true
-    else
-        echo "libvirtd runit service missing — attempting to start libvirtd daemon..."
-        command -v libvirtd >/dev/null 2>&1 && sudo libvirtd --daemon || true
-    fi
-
-    if [ -e /var/service/virtlogd ]; then
-        echo "Starting virtlogd (runit)..."
-        sudo sv up virtlogd || true
-    else
-        echo "virtlogd runit service missing — attempting to start virtlogd daemon..."
-        if command -v virtlogd >/dev/null 2>&1; then
-            sudo virtlogd --daemon || true
-        elif [ -x /usr/sbin/virtlogd ]; then
-            sudo /usr/sbin/virtlogd --daemon || true
-        fi
-    fi
-
-    if [ -e /var/service/virtlockd ]; then
-        echo "Starting virtlockd (runit)..."
-        sudo sv up virtlockd || true
-    else
-        if command -v virtlockd >/dev/null 2>&1; then
-            echo "virtlockd runit service missing — attempting to start virtlockd daemon..."
-            sudo virtlockd --daemon || true
-        fi
-    fi
-
-    sleep 1.5
-
-    echo "Sockets:"
-    ls -l /run/libvirt 2>/dev/null || true
-    [ -e /run/libvirt/virtlogd-sock ] && echo " - virtlogd-sock present" || echo " - virtlogd-sock missing"
-    [ -e /run/libvirt/libvirt-sock ] && echo " - libvirt-sock present" || echo " - libvirt-sock missing"
-
-    # Quick verification
-    if command -v virsh >/dev/null 2>&1; then
-        echo "virsh connection test:"
-        virsh -c qemu:///system list --all || true
-    fi
-
-    echo "virtup: done. If virt-manager previously complained, retry it now."
+virt() {
+    local action="${1:-status}" svc
+    case "$action" in
+        on | up | start)
+            sudo mkdir -p /run/libvirt
+            sudo chown root:root /run/libvirt
+            for svc in libvirtd virtlogd virtlockd; do
+                if [ -d "/etc/sv/$svc" ] && [ ! -e "/var/service/$svc" ]; then
+                    sudo ln -s "/etc/sv/$svc" "/var/service/$svc"
+                fi
+                if [ -e "/var/service/$svc" ]; then
+                    sudo sv up "$svc"
+                elif command -v "$svc" >/dev/null 2>&1; then
+                    sudo "$svc" --daemon
+                fi
+            done
+            command -v virsh >/dev/null 2>&1 && virsh -c qemu:///system list --all
+            ;;
+        off | down | stop)
+            for svc in virtlockd virtlogd libvirtd; do
+                if [ -e "/var/service/$svc" ]; then
+                    sudo sv down "$svc"
+                    sudo rm -f "/var/service/$svc"
+                elif pgrep -x "$svc" >/dev/null 2>&1; then
+                    sudo pkill -x "$svc"
+                fi
+            done
+            ;;
+        status)
+            for svc in libvirtd virtlogd virtlockd; do
+                printf '%-12s' "$svc"
+                sv status "$svc" 2>/dev/null || printf '%s\n' "unavailable"
+            done
+            command -v virsh >/dev/null 2>&1 && virsh -c qemu:///system list --all
+            ;;
+        *)
+            printf '%s\n' "Usage: virt [on|off|status]" >&2
+            return 2
+            ;;
+    esac
 }
 
-virtdown() {
-    echo "Stopping libvirt services..."
-
-    if [ -e /var/service/virtlockd ]; then
-        sudo sv down virtlockd || true
-        sudo rm -f /var/service/virtlockd || true
-    fi
-
-    if [ -e /var/service/virtlogd ]; then
-        sudo sv down virtlogd || true
-        sudo rm -f /var/service/virtlogd || true
-    else
-        # fallback: kill daemon if running
-        if pgrep -x virtlogd >/dev/null 2>&1; then
-            sudo pkill -f virtlogd || true
-        fi
-    fi
-
-    if [ -e /var/service/libvirtd ]; then
-        sudo sv down libvirtd || true
-        sudo rm -f /var/service/libvirtd || true
-    else
-        if pgrep -x libvirtd >/dev/null 2>&1; then
-            sudo pkill -f libvirtd || true
-        fi
-    fi
-
-    sudo rm -f /run/libvirt/virtlogd-sock 2>/dev/null || true
-    sudo rm -f /run/libvirt/libvirt-sock 2>/dev/null || true
-
-    echo "virtdown: libvirt services stopped and disabled from autostart (runit symlinks removed)."
-    echo "If you want services disabled but not removed, remove the 'rm -f /var/service/...' lines above."
-}
+virtup() { virt on; }
+virtdown() { virt off; }
 
 ### Other useful commands
 
@@ -1862,7 +2040,6 @@ alias r='bat'
 alias e='nvim'
 alias m='micro'
 alias ee='micro'
-alias rg='rg -p'
 alias nano='micro'
 alias pdf='zathura'
 alias ff='fastfetch'
@@ -1871,7 +2048,21 @@ alias lt='e leetcode.nvim'
 alias qr="zbarimg -q --raw"
 
 alias torus='$___name'
-alias relaxy='$___rel_ssh'
+alias rpi='$___rel_ssh'
+rpi-raw() {
+    local target=${RPI_SSH_TARGET:-}
+    local key=${RPI_SSH_KEY:-}
+    local port=${RPI_SSH_PORT:-22}
+    if [ -z "$target" ]; then
+        printf '%s
+' "Set RPI_SSH_TARGET in ~/.config/secrets/env first." >&2
+        return 2
+    fi
+    local -a ssh_args
+    ssh_args=(-p "$port")
+    [ -z "$key" ] || ssh_args+=(-i "$key")
+    ssh "${ssh_args[@]}" "$target" "$@"
+}
 alias piwatch='tmux -L piwatch a -t piwatch'
 
 alias lh='du -sh *'
@@ -1909,7 +2100,18 @@ _short_path() {
     fi
 }
 
-PROMPT_COMMAND='__last_exit=$?'
+_cnf_jump_file="${XDG_RUNTIME_DIR:-/tmp}/bash-cnf-jump.$$"
+
+_cnf_jump() {
+    [ -f "$_cnf_jump_file" ] || return 0
+
+    local dir
+    dir=$(<"$_cnf_jump_file")
+    rm -f -- "$_cnf_jump_file"
+    builtin cd -- "$dir"
+}
+
+PROMPT_COMMAND='_cnf_jump'
 
 PS1='\[\e[1;37m\][\u@\h \[\e[90m\]$(_short_path)\[\e[0m\]\[\e[1;37m\]]\[\e[0m\]\$ '
 
@@ -1935,7 +2137,7 @@ command_not_found_handle() {
         return 127
     }
 
-    builtin cd -- "$dir"
+    printf '%s' "$dir" >"$_cnf_jump_file"
 }
 
 cd() {
@@ -1945,10 +2147,33 @@ cd() {
 shopt -s autocd
 
 # Created by `pipx` on 2026-03-23 13:01:31
-export PATH="$PATH:/home/${TSSH_USER}/.local/bin"
+export PATH="$PATH:$HOME/.local/bin"
 
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
 export MANPATH="$HOME/.local/share/man:${MANPATH:-}"
 
-eval "$(tracker completion bash)"
+_dedupe_path() {
+    local -a dirs
+    local -A seen=()
+    local dir out="" first=1
+
+    IFS=: read -ra dirs <<<"${!1}:"
+    for dir in "${dirs[@]}"; do
+        [[ -n ${seen[x$dir]} ]] && continue
+        seen[x$dir]=1
+        if [[ $first -eq 1 ]]; then
+            out="$dir"
+            first=0
+        else
+            out+=":$dir"
+        fi
+    done
+
+    printf -v "$1" '%s' "$out"
+}
+
+_dedupe_path PATH
+_dedupe_path MANPATH
+
+command -v tracker >/dev/null 2>&1 && eval "$(tracker completion bash)"
