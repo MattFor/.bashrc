@@ -1459,7 +1459,11 @@ rustdoc_search() {
 alias rdoc='rustdoc_search'
 
 ai() {
-    local action model interpreter_model selected models choice root gateway ollama_pid odysseus_pid pid i url remote_host remote_service remote_port ts_hostname remote_prompt remote_response interpreter_api_base
+    local action model interpreter_model selected models choice root gateway ollama_pid odysseus_pid pid i url remote_host remote_service remote_port remote_local_port ts_hostname remote_prompt remote_response interpreter_api_base
+    local remote_action remote_hosts remote_status_json remote_selected remote_label remote_host_entries
+    local remote_api_base remote_tunnel_pid remote_tunnel_port remote_tunnel_log remote_models_json remote_model_entries remote_result remote_list_only remote_curl_status
+    local -a remote_host_options remote_model_options
+    local PS3
     root=${ODYSSEUS_ROOT:-"$HOME/applications/odysseus"}
     gateway=${FREELLMAPI_ROOT:-"$HOME/applications/freellmapi"}
     interpreter_api_base=${OPEN_INTERPRETER_API_BASE:-${OLLAMA_HOST:-http://127.0.0.1:11434}}
@@ -1482,7 +1486,7 @@ ai() {
                 'agents: Choose a coding agent' \
                 'odysseus: Open Odysseus (or terminal chat)' \
                 'freellmapi: Open FreeLLMAPI' \
-                'remote: Connect to another Tailscale machine' \
+                'remote: Choose a Tailscale PC and one of its Ollama models' \
                 'health: Check every local AI service, endpoint, and model' \
                 'status: Check local AI services' \
                 'models: List installed Ollama models' \
@@ -1646,6 +1650,80 @@ ai() {
                 printf '%s\n' "Tailscale is not installed." >&2
                 return 1
             fi
+            remote_action=${1:-interactive}
+            case "$remote_action" in
+                interactive | choose | run | models)
+                    if [ "$remote_action" != "interactive" ] || [ "$#" -gt 0 ]; then
+                        shift
+                    fi
+                    remote_list_only=0
+                    [ "$remote_action" = "models" ] && remote_list_only=1
+                    remote_host=${1:-}
+                    if [ -n "$remote_host" ]; then
+                        shift
+                    else
+                        remote_status_json=$(tailscale status --json 2>/dev/null) || remote_status_json=$(sudo tailscale status --json) || {
+                            printf '%s\n' "Could not read Tailscale status. Try: ai remote status" >&2
+                            return 1
+                        }
+                        remote_hosts=$(printf '%s' "$remote_status_json" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+for peer in data.get("Peer", {}).values():
+    if not peer.get("Online", False):
+        continue
+    host = (peer.get("DNSName") or peer.get("HostName") or "").rstrip(".")
+    if not host:
+        continue
+    label = peer.get("HostName") or host
+    system = peer.get("OS") or "unknown OS"
+    print(f"{host}\t{label} ({system}) · {host}")
+') || return 1
+                        [ -n "$remote_hosts" ] || {
+                            printf '%s\n' "No online Tailscale PCs found. Check `ai remote status`." >&2
+                            return 1
+                        }
+                        if command -v fzf >/dev/null 2>&1; then
+                            remote_selected=$(printf '%s\n' "$remote_hosts" | fzf --delimiter="$(printf '\t')" --with-nth=2.. --prompt='Tailscale PC: ' --height=50% --layout=reverse) || return 0
+                            IFS=$'\t' read -r remote_host remote_label <<<"$remote_selected"
+                        else
+                            mapfile -t remote_host_options < <(printf '%s\n' "$remote_hosts" | cut -f1)
+                            PS3='Select a Tailscale PC: '
+                            select remote_host in "${remote_host_options[@]}"; do
+                                [ -n "$remote_host" ] && break
+                            done
+                        fi
+                        [ -n "$remote_host" ] || return 0
+                    fi
+                    if [ "$remote_list_only" -eq 1 ]; then
+                        set -- local "$remote_host" --list
+                    else
+                        set -- local "$remote_host" "$@"
+                    fi
+                    ;;
+                hosts)
+                    remote_status_json=$(tailscale status --json 2>/dev/null) || remote_status_json=$(sudo tailscale status --json) || {
+                        printf '%s\n' "Could not read Tailscale status." >&2
+                        return 1
+                    }
+                    remote_host_entries=$(printf '%s' "$remote_status_json" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+for peer in data.get("Peer", {}).values():
+    if not peer.get("Online", False):
+        continue
+    host = (peer.get("DNSName") or peer.get("HostName") or "").rstrip(".")
+    if host:
+        print("{}\t{} ({})".format(host, peer.get("HostName") or host, peer.get("OS") or "unknown OS"))
+') || return 1
+                    if [ -n "$remote_host_entries" ]; then
+                        printf '%s\n' "$remote_host_entries" | awk -F '\t' '{ printf "%-36s %s\n", $1, $2 }'
+                    else
+                        printf '%s\n' "No online Tailscale PCs found."
+                    fi
+                    return 0
+                    ;;
+            esac
             case "${1:-help}" in
                 setup)
                     ts_hostname=${TS_HOSTNAME:-${HOSTNAME%%.*}}
@@ -1722,50 +1800,119 @@ ai() {
                             ;;
                         *) remote_port=$remote_service ;;
                     esac
-                    remote_port=${4:-$remote_port}
-                    case "$remote_port" in
+                    remote_local_port=${4:-$remote_port}
+                    case "$remote_local_port" in
                         '' | *[!0-9]*)
                             printf '%s\n' "Local port must be numeric." >&2
                             return 2
                             ;;
                     esac
-                    printf '%s\n' "Forwarding 127.0.0.1:$remote_port to $remote_host:127.0.0.1:$remote_port; press Ctrl-C to stop."
-                    tailscale ssh "$remote_host" -N -L "$remote_port:127.0.0.1:$remote_port"
+                    printf '%s\n' "Forwarding 127.0.0.1:$remote_local_port to $remote_host:127.0.0.1:$remote_port; press Ctrl-C to stop."
+                    tailscale ssh "$remote_host" -N -L "$remote_local_port:127.0.0.1:$remote_port"
                     ;;
                 local)
                     remote_host=$2
                     model=$3
-                    shift 3
                     [ -n "$remote_host" ] || {
-                        printf '%s\n' "Usage: ai remote local <machine> [MODEL] [PROMPT]" >&2
+                        printf '%s\n' "Usage: ai remote local <machine> [MODEL] [PROMPT...]" >&2
                         return 2
                     }
-                    if ! curl -fsS --max-time 3 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
-                        if [ -f /tmp/ai-remote-ollama.pid ]; then
-                            pid=$(cat /tmp/ai-remote-ollama.pid)
-                            kill "$pid" 2>/dev/null || true
-                            rm -f /tmp/ai-remote-ollama.pid
-                        fi
-                        nohup tailscale ssh "$remote_host" -N -L 11434:127.0.0.1:11434 \
-                            >/tmp/ai-remote-ollama.log 2>&1 </dev/null &
-                        echo $! >/tmp/ai-remote-ollama.pid
-                        sleep 2
+                    remote_list_only=0
+                    if [ "$model" = "--list" ]; then
+                        remote_list_only=1
+                        model=
                     fi
-                    curl -fsS --max-time 5 http://127.0.0.1:11434/api/tags >/dev/null 2>&1 || {
-                        printf '%s\n' "Remote Ollama is unavailable. Is $remote_host online and connected to Tailscale?" >&2
+                    if [ "$#" -ge 3 ]; then
+                        shift 3
+                    else
+                        shift "$#"
+                    fi
+                    remote_tunnel_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()') || return 1
+                    remote_api_base="http://127.0.0.1:$remote_tunnel_port"
+                    remote_tunnel_log=$(mktemp "${TMPDIR:-/tmp}/ai-remote-ollama.XXXXXX") || return 1
+                    tailscale ssh "$remote_host" -N -L "$remote_tunnel_port:127.0.0.1:11434" >"$remote_tunnel_log" 2>&1 </dev/null &
+                    remote_tunnel_pid=$!
+                    remote_models_json=
+                    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+                        remote_models_json=$(curl -fsS --max-time 1 "$remote_api_base/api/tags" 2>/dev/null) && break
+                        kill -0 "$remote_tunnel_pid" 2>/dev/null || break
+                        sleep 0.25
+                    done
+                    if [ -z "$remote_models_json" ]; then
+                        kill "$remote_tunnel_pid" 2>/dev/null || true
+                        wait "$remote_tunnel_pid" 2>/dev/null || true
+                        [ ! -s "$remote_tunnel_log" ] || tail -n 5 "$remote_tunnel_log" >&2
+                        rm -f "$remote_tunnel_log"
+                        printf '%s\n' "Remote Ollama is unavailable on $remote_host. Check that Ollama is running and reachable over Tailscale SSH." >&2
+                        return 1
+                    fi
+                    remote_model_entries=$(printf '%s' "$remote_models_json" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+for model in data.get("models", []):
+    name = model.get("name")
+    if not name:
+        continue
+    details = model.get("details") or {}
+    size = model.get("size") or 0
+    size_label = ""
+    if size:
+        value = float(size)
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if value < 1024 or unit == "TB":
+                size_label = f"{value:.1f} {unit}"
+                break
+            value /= 1024
+    info = [part for part in (details.get("parameter_size"), details.get("quantization_level"), size_label) if part]
+    label = " · ".join(info) if info else "Ollama model"
+    print("{}\t{}".format(name, label))
+') || {
+                        kill "$remote_tunnel_pid" 2>/dev/null || true
+                        wait "$remote_tunnel_pid" 2>/dev/null || true
+                        rm -f "$remote_tunnel_log"
+                        printf '%s\n' "Could not read the model list from $remote_host." >&2
                         return 1
                     }
-                    models=$(curl -fsS http://127.0.0.1:11434/api/tags | python3 -c 'import json, sys; print("\n".join(m["name"] for m in json.load(sys.stdin)["models"]))') || return 1
+                    models=$(printf '%s\n' "$remote_model_entries" | cut -f1)
+                    if [ -z "$models" ]; then
+                        kill "$remote_tunnel_pid" 2>/dev/null || true
+                        wait "$remote_tunnel_pid" 2>/dev/null || true
+                        rm -f "$remote_tunnel_log"
+                        printf '%s\n' "No Ollama models are installed on $remote_host." >&2
+                        return 1
+                    fi
+                    if [ "$remote_list_only" -eq 1 ]; then
+                        printf '%s\n' "$remote_model_entries" | awk -F '\t' '{ printf "%-44s %s\n", $1, $2 }'
+                        kill "$remote_tunnel_pid" 2>/dev/null || true
+                        wait "$remote_tunnel_pid" 2>/dev/null || true
+                        rm -f "$remote_tunnel_log"
+                        return 0
+                    fi
                     [ -n "$model" ] && printf '%s\n' "$models" | grep -Fxq "$model" || model=
                     if [ -z "$model" ]; then
-                        model=$(printf '%s\n' "$models" | fzf --prompt="Remote model ($remote_host): " --height=40% --layout=reverse)
+                        if command -v fzf >/dev/null 2>&1; then
+                            remote_selected=$(printf '%s\n' "$remote_model_entries" | fzf --delimiter="$(printf '\t')" --with-nth=2.. --prompt="Remote model ($remote_host): " --height=50% --layout=reverse)
+                            if [ -n "$remote_selected" ]; then
+                                model=${remote_selected%%$'\t'*}
+                            fi
+                        else
+                            mapfile -t remote_model_options < <(printf '%s\n' "$models")
+                            PS3="Select a model on $remote_host: "
+                            select model in "${remote_model_options[@]}"; do
+                                [ -n "$model" ] && break
+                            done
+                        fi
                     fi
-                    [ -n "$model" ] || return 0
+                    if [ -z "$model" ]; then
+                        kill "$remote_tunnel_pid" 2>/dev/null || true
+                        wait "$remote_tunnel_pid" 2>/dev/null || true
+                        rm -f "$remote_tunnel_log"
+                        return 0
+                    fi
                     if [ $# -gt 0 ]; then
                         remote_prompt="$*"
                     else
-                        printf 'Prompt for %s via %s: ' "$model" "$remote_host"
-                        IFS= read -r remote_prompt
+                        IFS= read -r -e -p "Prompt for $model on $remote_host: " remote_prompt
                     fi
                     remote_response=$(
                         python3 - "$model" "$remote_prompt" <<'PY'
@@ -1779,23 +1926,38 @@ print(json.dumps({
     "think": True,
 }))
 PY
-                    ) || return 1
-                    curl -fsS --max-time 600 http://127.0.0.1:11434/api/generate \
+                    ) || {
+                        kill "$remote_tunnel_pid" 2>/dev/null || true
+                        wait "$remote_tunnel_pid" 2>/dev/null || true
+                        rm -f "$remote_tunnel_log"
+                        return 1
+                    }
+                    remote_result=$(curl -fsS --max-time 600 "$remote_api_base/api/generate" \
                         -H 'Content-Type: application/json' \
-                        -d "$remote_response" \
-                        | python3 -c 'import json, sys; print(json.load(sys.stdin).get("response", ""))'
+                        -d "$remote_response")
+                    remote_curl_status=$?
+                    kill "$remote_tunnel_pid" 2>/dev/null || true
+                    wait "$remote_tunnel_pid" 2>/dev/null || true
+                    rm -f "$remote_tunnel_log"
+                    [ "$remote_curl_status" -eq 0 ] || return "$remote_curl_status"
+                    printf '%s' "$remote_result" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("response", ""))'
                     ;;
                 help | *)
                     printf '%s\n' \
-                        'Usage: ai remote [setup|status|ssh|agent|tunnel|local]' \
+                        'Usage: ai remote [choose|run|models|hosts|setup|status|ssh|agent|tunnel|local]' \
+                        '  ai remote                              Choose a Tailscale PC, its Ollama model, and a prompt' \
+                        '  ai remote choose [PC] [MODEL] [PROMPT...]  Interactive remote model chat' \
+                        '  ai remote run [PC] [MODEL] [PROMPT...]     Alias for choose; accepts direct arguments' \
+                        '  ai remote models [PC]                  List Ollama models installed on a PC' \
+                        '  ai remote hosts                        List online Tailscale PCs' \
                         '  ai remote setup                         Show one-time Tailscale setup' \
                         '  ai remote status                        List machines and MagicDNS names' \
                         '  ai remote ssh <machine> [command...]    Open an SSH session by name' \
                         '  ai remote agent <machine> <agent> [dir] [args...]  Run a coding agent remotely' \
-                        '  ai remote tunnel <machine> ollama       Tunnel remote Ollama to local port 11434' \
-                        '  ai remote tunnel <machine> odysseus     Tunnel remote Odysseus to local port 7000' \
-                        '  ai remote tunnel <machine> freellmapi   Tunnel remote FreeLLMAPI to local port 3001' \
-                        '  ai remote local <machine> [MODEL] [PROMPT]  Query remote Ollama automatically'
+                        '  ai remote tunnel <machine> ollama [port]  Tunnel remote Ollama (default local port 11434)' \
+                        '  ai remote tunnel <machine> odysseus [port]  Tunnel remote Odysseus (default local port 7000)' \
+                        '  ai remote tunnel <machine> freellmapi [port]  Tunnel remote FreeLLMAPI (default local port 3001)' \
+                        '  ai remote local <PC> [MODEL] [PROMPT...]  Query remote Ollama automatically'
                     ;;
             esac
             ;;
