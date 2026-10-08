@@ -1583,7 +1583,7 @@ for model in data.get("models", []):
                 size_label = f"{value:.1f} {unit}"
                 break
             value /= 1024
-    info = [part for part in (details.get("parameter_size"), details.get("quantization_level"), size_label) if part]
+    info = [part for part in (details.get("parameter_size"), size_label) if part]
     label = " · ".join(info) if info else "Ollama model"
     print("{}\t{}".format(name, label))
 ') || {
@@ -1602,7 +1602,7 @@ for model in data.get("models", []):
                     [ -n "$model" ] && printf '%s\n' "$models" | grep -Fxq "$model" || model=
                     if [ -z "$model" ]; then
                         if command -v fzf >/dev/null 2>&1; then
-                            remote_selected=$(printf '%s\n' "$remote_model_entries" | fzf --delimiter="$(printf '\t')" --with-nth=2.. --prompt="Remote model ($remote_host): " --height=50% --layout=reverse)
+                            remote_selected=$(printf '%s\n' "$remote_model_entries" | fzf --delimiter="$(printf '\t')" --prompt="Remote model ($remote_host): " --height=50% --layout=reverse)
                             if [ -n "$remote_selected" ]; then
                                 model=${remote_selected%%$'\t'*}
                             fi
