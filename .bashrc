@@ -7,7 +7,7 @@
 HISTSIZE=1000000
 HISTFILESIZE=2000000
 
-sync="${SYNC_DIR:-"$HOME/sync-folder"}"
+sync="${SYNC_DIR:-"$HOME/syncthing"}"
 s="$sync"
 
 # Terminal
@@ -48,6 +48,11 @@ mvpr() {
     rsync -ah --progress --remove-source-files "$@"
 }
 
+# yt-dlp shortcuts. Files land in ~/Downloads (override with YT_DIR).
+#   yt <url> [args]   best video+audio, merged to mp4
+#   yt a   <url>      audio only -> mp3
+#   yt t   <url>      thumbnail only
+#   yt sub <url>      video with embedded subtitles
 yt() {
     local out="${YT_DIR:-$HOME/Downloads}"
     case "${1:-}" in
@@ -1481,6 +1486,10 @@ rustdoc_search() {
 
 alias rdoc='rustdoc_search'
 
+### AI tools
+
+# The AI stack lives in two programs installed by local-ai-studio: ai-hub, the animated menu a bare `ai` opens,
+# and ai-cli, every subcommand (ai on, ai stop, ai status, ai local, ai help ...).
 ai() {
     if [ $# -eq 0 ] && [ -t 0 ] && [ -t 1 ] && command -v ai-hub >/dev/null 2>&1; then
         ai-hub
@@ -1489,13 +1498,19 @@ ai() {
     fi
 }
 
+### Agent skills
+
+# Pick which agent skills Claude Code and Cursor load. Skill repos live in
+# ~/.claude/skill-library, `npx skills` installs in ~/.agents/skills; a mode
+# symlinks its set into ~/.claude/skills. New sessions pick up the change.
+# Cursor also always reads ~/.agents/skills, so those stay visible to it in every mode.
 declare -A SKILLMODES=(
-    [code]='ponytail mattpocock-skills security-audit i-have-adhd tracker'
-    [web]='ponytail mattpocock-skills security-audit i-have-adhd claude-seo accessibility best-practices core-web-vitals performance seo web-quality-audit pagespeed-insights tracker'
+    [code]='ponytail mattpocock-skills security-audit i-have-adhd tracker logo-design'
+    [web]='ponytail mattpocock-skills security-audit i-have-adhd claude-seo accessibility best-practices core-web-vitals performance seo web-quality-audit pagespeed-insights tracker logo-design'
     [superpowers]='superpowers mattpocock-skills security-audit i-have-adhd tracker'
     [write]='humanizer diagram-design brag i-have-adhd tracker'
     [red]='claude-red security-audit i-have-adhd tracker'
-    [all]='ponytail superpowers mattpocock-skills security-audit i-have-adhd claude-seo accessibility best-practices core-web-vitals performance seo web-quality-audit pagespeed-insights humanizer diagram-design find-skills tracker'
+    [all]='ponytail superpowers mattpocock-skills security-audit i-have-adhd claude-seo accessibility best-practices core-web-vitals performance seo web-quality-audit pagespeed-insights humanizer diagram-design find-skills tracker logo-design'
 )
 
 skillmode() {
@@ -1512,6 +1527,7 @@ skillmode() {
         return 2
     fi
 
+    # Only links into the two stores belong to skillmode; anything else in ~/.claude/skills is left alone.
     for link in "$dst"/*; do
         [ -L "$link" ] || continue
         case $(readlink "$link") in "$lib"/* | "$agents"/*) rm -- "$link" ;; esac
@@ -1797,8 +1813,7 @@ function rpi-raw {
     local key=${RPI_SSH_KEY:-}
     local port=${RPI_SSH_PORT:-22}
     if [ -z "$target" ]; then
-        printf '%s
-' "Set RPI_SSH_TARGET in ~/.config/secrets/env first." >&2
+        printf '%s\n' "Set RPI_SSH_TARGET in ~/.config/secrets/env first." >&2
         return 2
     fi
     local -a ssh_args
@@ -1808,19 +1823,52 @@ function rpi-raw {
 }
 alias piwatch='tmux -L piwatch a -t piwatch'
 
+# tssh [host|user@host] [command...]. With no host it lists the Tailscale machines to pick
+# from by number or name; enter takes TSSH_PEER_<THIS HOST> from ~/.config/secrets/env.
 tssh() {
     local target=${1:-}
     shift || true
 
+    local -a peers
+    local line name os state ip host_os='' host_ip=''
+    # one line per machine: name os online|offline ip
+    mapfile -t peers < <(tailscale status --self=false 2>/dev/null |
+        awk '$1 ~ /^(100\.|fd7a:)/ { print $2, $4, ($0 ~ /offline/ ? "offline" : "online"), $1 }')
+
     if [ -z "$target" ]; then
-        local local_host map_name
+        local local_host map_name default choice i
         local_host=$(hostname | cut -d. -f1 | tr '[:lower:]' '[:upper:]' | sed 's/[^A-Z0-9_]/_/g')
         map_name="TSSH_PEER_${local_host}"
-        target=${!map_name:-${TSSH_DEFAULT_TARGET:-}}
+        default=${!map_name:-${TSSH_DEFAULT_TARGET:-}}
+        if [ "${#peers[@]}" -eq 0 ] && [ -z "$default" ]; then
+            printf 'Usage: tssh <host|user@host> [command...]\n' >&2
+            return 2
+        fi
+        for i in "${!peers[@]}"; do
+            read -r name os state ip <<<"${peers[i]}"
+            printf '  %d  %-22s %-8s %s%s\n' $((i + 1)) "$name" "$os" "$state" \
+                "$([ -n "$default" ] && { [ "${default#*@}" = "$name" ] || [ "${default#*@}" = "$ip" ]; } && echo '  ← enter')"
+        done
+        read -rp "connect to: " choice || return 1
+        choice=${choice:-$default}
+        if [[ $choice =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#peers[@]}" ]; then
+            read -r choice _ <<<"${peers[choice - 1]}"
+        fi
+        [ -n "$choice" ] || return 1
+        target=$choice
     fi
-    if [ -z "$target" ]; then
-        printf 'Usage: tssh <host|user@host> [command...]\n' >&2
-        return 2
+
+    for line in "${peers[@]}"; do
+        read -r name os state ip <<<"$line"
+        if [ "${target#*@}" = "$name" ] || [ "${target#*@}" = "$ip" ]; then
+            host_os=$os
+            host_ip=$ip
+        fi
+    done
+    # Android can't run the Tailscale SSH server, so phones run Termux's sshd on 8022 (it ignores the user).
+    if [ "$host_os" = android ]; then
+        ssh -p 8022 "$host_ip" "$@"
+        return
     fi
     case "$target" in
         *@*) ;;
@@ -1829,22 +1877,44 @@ tssh() {
     tailscale ssh "$target" "$@"
 }
 
+# rsync starts its shell as `<shell> -l user host`, which `tailscale ssh` rejects, so use plain ssh
+# through `tailscale nc`. A phone (android) has no Tailscale SSH server; Termux's sshd listens on 8022.
+_trsync() {
+    local arg host port=22
+    for arg; do
+        case $arg in
+            -*) ;;
+            *:*)
+                host=${arg%%:*}
+                host=${host#*@}
+                if tailscale status --self=false 2>/dev/null |
+                    awk -v h="$host" '($1 == h || $2 == h) && $4 == "android" { found = 1 } END { exit !found }'; then
+                    port=8022
+                fi
+                ;;
+        esac
+    done
+    rsync -ah --progress -e "ssh -p $port -o StrictHostKeyChecking=accept-new -o 'ProxyCommand=tailscale nc %h %p'" "$@"
+}
+
+# Copy files between this computer and a Tailscale machine.
 tcopy() {
     if [ "$#" -lt 2 ]; then
         printf 'Usage: tcopy <source> <destination>\n' >&2
         return 2
     fi
 
-    rsync -ah --progress -e 'tailscale ssh' "$@"
+    _trsync "$@"
 }
 
+# Move files between this computer and a Tailscale machine.
 tmove() {
     if [ "$#" -lt 2 ]; then
         printf 'Usage: tmove <source> <destination>\n' >&2
         return 2
     fi
 
-    rsync -ah --progress --remove-source-files -e 'tailscale ssh' "$@"
+    _trsync --remove-source-files "$@"
 }
 
 alias lh='du -sh *'
