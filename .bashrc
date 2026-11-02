@@ -7,6 +7,10 @@
 HISTSIZE=1000000
 HISTFILESIZE=2000000
 
+# HISTIGNORE is colon-separated and can't escape a colon, so `?` stands in for one.
+HISTCONTROL=ignoreboth
+HISTIGNORE='*Bearer *:*_TOKEN=*:*PASSWORD=*:*SECRET=*:*mongodb*?//*@*:*ghp_*:*github_pat_*:*_authToken*'
+
 sync="${SYNC_DIR:-"$HOME/syncthing"}"
 s="$sync"
 
@@ -20,24 +24,35 @@ fi
 
 ### System utilities
 
-install() {
-    sudo xbps-install -S "$@"
-}
+# Void-only; elsewhere (the phone) `install` stays coreutils' and `update` the local script.
+if command -v xbps-install >/dev/null 2>&1; then
+    install() {
+        sudo xbps-install -S "$@"
+    }
 
-remove() {
-    sudo xbps-remove -R "$@"
-}
+    remove() {
+        sudo xbps-remove -R "$@"
+    }
 
-removeoldkernels() {
-    sudo vkpurge rm all
-}
+    removeoldkernels() {
+        sudo vkpurge rm all
+    }
+fi
 
 update() {
-    sudo xbps-install -Syu || true
+    if command -v xbps-install >/dev/null 2>&1; then
+        sudo xbps-install -Syu || true
+    elif type -P update >/dev/null; then
+        command update || true
+    fi
 
     command -v rustup >/dev/null 2>&1 && rustup update || true
 
-    command -v flatpak >/dev/null 2>&1 && flatpak update -y || true
+    # Polkit lets only the local desktop session update system flatpaks without a password; over ssh it refuses.
+    if command -v flatpak >/dev/null 2>&1; then
+        sudo flatpak update -y --system || true
+        flatpak update -y --user || true
+    fi
 }
 
 mvp() {
@@ -54,6 +69,11 @@ mvpr() {
 #   yt t   <url>      thumbnail only
 #   yt sub <url>      video with embedded subtitles
 yt() {
+    # The phone has its own `yt {vid|mp3|png} URL` script; hand those through to it.
+    case "${1:-}" in vid | mp3 | png) if type -P yt >/dev/null; then
+        command yt "$@"
+        return
+    fi ;; esac
     local out="${YT_DIR:-$HOME/Downloads}"
     case "${1:-}" in
         a | audio)
@@ -845,6 +865,11 @@ gitgraph() {
 gitrecurse() {
     local msg="${1:-update}"
 
+    if ! command -v gitrecurse-repo >/dev/null 2>&1; then
+        echo "gitrecurse: gitrecurse-repo is not installed on this machine" >&2
+        return 127
+    fi
+
     gitrecurse-repo "$msg"
 
     git submodule foreach --recursive "gitrecurse-repo '$msg'"
@@ -931,6 +956,9 @@ gitpr() {
     [ "$gh_rc" -eq 0 ] && [ "$tea_rc" -eq 0 ]
 }
 
+# pv shows transfer progress where it's installed; elsewhere the data just passes through.
+_progress() { if command -v pv >/dev/null 2>&1; then pv "$@"; else cat; fi; }
+
 rpi-up() {
     if [ $# -lt 1 ] || [ $# -gt 2 ]; then
         echo "Usage: rpi-up <local_path> [remote_dir]"
@@ -947,7 +975,7 @@ rpi-up() {
     fi
 
     tar -c -C "$(dirname -- "$src")" -- "$(basename -- "$src")" \
-        | pv -s "$(du -sb -- "$src" | cut -f1)" \
+        | _progress -s "$(du -sb -- "$src" | cut -f1)" \
         | $___rel_ssh "mkdir -p -- $(printf '%q' "$dest") && tar -x -C $(printf '%q' "$dest")"
 }
 
@@ -964,7 +992,7 @@ rpi-dl() {
     mkdir -p -- "$dest" || return 1
 
     $___rel_ssh "cd $(printf '%q' "$(dirname -- "$src")") && tar -c -- $(printf '%q' "$(basename -- "$src")")" </dev/null \
-        | pv \
+        | _progress \
         | tar -x -C "$dest"
 }
 
@@ -1500,18 +1528,19 @@ ai() {
 
 ### Agent skills
 
-# Pick which agent skills Claude Code and Cursor load. Skill repos live in
-# ~/.claude/skill-library, `npx skills` installs in ~/.agents/skills; a mode
-# symlinks its set into ~/.claude/skills. New sessions pick up the change.
-# Cursor also always reads ~/.agents/skills, so those stay visible to it in every mode.
 declare -A SKILLMODES=(
-    [code]='ponytail mattpocock-skills security-audit i-have-adhd tracker logo-design'
-    [web]='ponytail mattpocock-skills security-audit i-have-adhd claude-seo accessibility best-practices core-web-vitals performance seo web-quality-audit pagespeed-insights tracker logo-design'
-    [superpowers]='superpowers mattpocock-skills security-audit i-have-adhd tracker'
-    [write]='humanizer diagram-design brag i-have-adhd tracker'
-    [red]='claude-red security-audit i-have-adhd tracker'
-    [all]='ponytail superpowers mattpocock-skills security-audit i-have-adhd claude-seo accessibility best-practices core-web-vitals performance seo web-quality-audit pagespeed-insights humanizer diagram-design find-skills tracker logo-design'
+    [code]='ponytail mattpocock-skills security-audit tracker logo-design'
+    [web]='ponytail mattpocock-skills security-audit claude-seo accessibility best-practices core-web-vitals performance seo web-quality-audit pagespeed-insights tracker logo-design'
+    [superpowers]='superpowers mattpocock-skills security-audit tracker'
+    [write]='humanizer diagram-design brag tracker'
+    [red]='claude-red security-audit tracker'
+    [all]='ponytail superpowers mattpocock-skills security-audit claude-seo accessibility best-practices core-web-vitals performance seo web-quality-audit pagespeed-insights humanizer diagram-design find-skills tracker logo-design'
 )
+
+if [ -n "${SKILLMODES_EXTRA:-}" ]; then
+    for _mode in "${!SKILLMODES[@]}"; do SKILLMODES[$_mode]+=" $SKILLMODES_EXTRA"; done
+    unset _mode
+fi
 
 skillmode() {
     local lib=$HOME/.claude/skill-library agents=$HOME/.agents/skills dst=$HOME/.claude/skills
@@ -1823,8 +1852,14 @@ function rpi-raw {
 }
 alias piwatch='tmux -L piwatch a -t piwatch'
 
-# tssh [host|user@host] [command...]. With no host it lists the Tailscale machines to pick
-# from by number or name; enter takes TSSH_PEER_<THIS HOST> from ~/.config/secrets/env.
+_ts_sock=/data/data/com.termux/files/home/.tailscale/tailscaled.sock
+if [ -d "${_ts_sock%/*}" ]; then
+    tailscale() { command tailscale --socket="$_ts_sock" "$@"; }
+    _ts_proxy="ProxyCommand=tailscale --socket=$_ts_sock nc %h %p"
+else
+    _ts_proxy="ProxyCommand=tailscale nc %h %p"
+fi
+
 tssh() {
     local target=${1:-}
     shift || true
@@ -1832,8 +1867,8 @@ tssh() {
     local -a peers
     local line name os state ip host_os='' host_ip=''
     # one line per machine: name os online|offline ip
-    mapfile -t peers < <(tailscale status --self=false 2>/dev/null |
-        awk '$1 ~ /^(100\.|fd7a:)/ { print $2, $4, ($0 ~ /offline/ ? "offline" : "online"), $1 }')
+    mapfile -t peers < <(tailscale status --self=false 2>/dev/null \
+        | awk '$1 ~ /^(100\.|fd7a:)/ { print $2, $4, ($0 ~ /offline/ ? "offline" : "online"), $1 }')
 
     if [ -z "$target" ]; then
         local local_host map_name default choice i
@@ -1867,14 +1902,15 @@ tssh() {
     done
     # Android can't run the Tailscale SSH server, so phones run Termux's sshd on 8022 (it ignores the user).
     if [ "$host_os" = android ]; then
-        ssh -p 8022 "$host_ip" "$@"
+        ssh -p 8022 -o StrictHostKeyChecking=accept-new -o "$_ts_proxy" "$host_ip" "$@"
         return
     fi
     case "$target" in
         *@*) ;;
         *) target="${TSSH_USER:-${USER:-}}@$target" ;;
     esac
-    tailscale ssh "$target" "$@"
+    # Plain ssh through `tailscale nc` reaches the same Tailscale SSH server and also works in userspace mode.
+    ssh -o StrictHostKeyChecking=accept-new -o "$_ts_proxy" "$target" "$@"
 }
 
 # rsync starts its shell as `<shell> -l user host`, which `tailscale ssh` rejects, so use plain ssh
@@ -1887,14 +1923,14 @@ _trsync() {
             *:*)
                 host=${arg%%:*}
                 host=${host#*@}
-                if tailscale status --self=false 2>/dev/null |
-                    awk -v h="$host" '($1 == h || $2 == h) && $4 == "android" { found = 1 } END { exit !found }'; then
+                if tailscale status --self=false 2>/dev/null \
+                    | awk -v h="$host" '($1 == h || $2 == h) && $4 == "android" { found = 1 } END { exit !found }'; then
                     port=8022
                 fi
                 ;;
         esac
     done
-    rsync -ah --progress -e "ssh -p $port -o StrictHostKeyChecking=accept-new -o 'ProxyCommand=tailscale nc %h %p'" "$@"
+    rsync -ah --progress -e "ssh -p $port -o StrictHostKeyChecking=accept-new -o '$_ts_proxy'" "$@"
 }
 
 # Copy files between this computer and a Tailscale machine.
@@ -1935,7 +1971,7 @@ if command -v dircolors >/dev/null 2>&1; then
 fi
 
 _short_path() {
-    local pwd="$PWD"
+    local pwd="${PWD//[[:cntrl:]]/?}"
     if [[ "$pwd" == "$HOME"* ]]; then
         pwd="~${pwd#$HOME}"
     fi
@@ -1952,18 +1988,33 @@ _short_path() {
     fi
 }
 
-_cnf_jump_file="${XDG_RUNTIME_DIR:-/tmp}/bash-cnf-jump.$$"
+# command_not_found_handle runs in a subshell, so it hands the directory back through a file.
+# mktemp, not a fixed name: /tmp doesn't exist for Termux, and on Linux a predictable name in /tmp
+# lets another user pick where you cd.
+_cnf_jump_file=$(mktemp "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/bash-cnf-jump.XXXXXX" 2>/dev/null) || _cnf_jump_file=
+trap '[ -n "$_cnf_jump_file" ] && rm -f -- "$_cnf_jump_file"' EXIT
 
 _cnf_jump() {
-    [ -f "$_cnf_jump_file" ] || return 0
+    [ -s "$_cnf_jump_file" ] || return 0
 
     local dir
     dir=$(<"$_cnf_jump_file")
-    rm -f -- "$_cnf_jump_file"
+    : >"$_cnf_jump_file"
     builtin cd -- "$dir"
 }
 
-PROMPT_COMMAND='_cnf_jump'
+# OSC 7: tells tmux (here, or on the machine you ssh'd from) which host and dir this shell is in.
+# OSC 2: titles the pane "bash" at the prompt, and the command line while one runs (PS0), so tmux names windows after it.
+_osc7() { printf '\e]7;file://%s%s\a\e]2;bash\a' "$HOSTNAME" "${PWD//[[:cntrl:]]/?}"; }
+_title_cmd() {
+    local c
+    c=$(HISTTIMEFORMAT= history 1)
+    c=${c#*[0-9]  }
+    printf '\e]2;%s\a' "${c//[[:cntrl:]]/ }"
+}
+
+PROMPT_COMMAND='_cnf_jump; _osc7'
+PS0='$(_title_cmd)'
 
 PS1='\[\e[1;37m\][\u@\h \[\e[90m\]$(_short_path)\[\e[0m\]\[\e[1;37m\]]\[\e[0m\]\$ '
 
@@ -1984,7 +2035,7 @@ command_not_found_handle() {
     esac
 
     local dir
-    dir="$(zoxide query "$cmd" 2>/dev/null)" || {
+    [ -n "$_cnf_jump_file" ] && dir="$(zoxide query "$cmd" 2>/dev/null)" || {
         printf 'bash: %s: command not found\n' "$cmd" >&2
         return 127
     }
@@ -2000,6 +2051,7 @@ shopt -s autocd
 
 # Created by `pipx` on 2026-03-23 13:01:31
 export PATH="$HOME/.local/bin:$PATH"
+# Never run scripts straight from ~/syncthing
 
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
@@ -2028,4 +2080,16 @@ _dedupe_path() {
 _dedupe_path PATH
 _dedupe_path MANPATH
 
-command -v tracker >/dev/null 2>&1 && eval "$(tracker completion bash)"
+if command -v tracker >/dev/null 2>&1; then
+    _tracker_complete() {
+        local current="${COMP_WORDS[COMP_CWORD]}"
+
+        mapfile -t COMPREPLY < <("${COMP_WORDS[0]}" completion words "${current}" 2>/dev/null)
+    }
+    complete -o default -F _tracker_complete tracker t
+fi
+
+if [ ! -L "$HOME/.bashrc" ] && [ -f "$sync/.bashrc" ] && command -v bashrc-sync >/dev/null 2>&1 \
+    && ! cmp -s "$HOME/.bashrc" "$sync/.bashrc"; then
+    printf 'bashrc: ~/.bashrc and the synced copy differ (bashrc-sync pull | push)\n' >&2
+fi
