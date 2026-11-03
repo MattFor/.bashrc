@@ -6,7 +6,7 @@
 # History
 HISTSIZE=1000000
 HISTFILESIZE=2000000
-
+# Keep credentials out of the (huge) history file; a leading space also skips a line.
 # HISTIGNORE is colon-separated and can't escape a colon, so `?` stands in for one.
 HISTCONTROL=ignoreboth
 HISTIGNORE='*Bearer *:*_TOKEN=*:*PASSWORD=*:*SECRET=*:*mongodb*?//*@*:*ghp_*:*github_pat_*:*_authToken*'
@@ -70,10 +70,7 @@ mvpr() {
 #   yt sub <url>      video with embedded subtitles
 yt() {
     # The phone has its own `yt {vid|mp3|png} URL` script; hand those through to it.
-    case "${1:-}" in vid | mp3 | png) if type -P yt >/dev/null; then
-        command yt "$@"
-        return
-    fi ;; esac
+    case "${1:-}" in vid | mp3 | png) if type -P yt >/dev/null; then command yt "$@"; return; fi ;; esac
     local out="${YT_DIR:-$HOME/Downloads}"
     case "${1:-}" in
         a | audio)
@@ -1528,6 +1525,10 @@ ai() {
 
 ### Agent skills
 
+# Pick which agent skills Claude Code and Cursor load. Skill repos live in
+# ~/.claude/skill-library, `npx skills` installs in ~/.agents/skills; a mode
+# symlinks its set into ~/.claude/skills. New sessions pick up the change.
+# Cursor also always reads ~/.agents/skills, so those stay visible to it in every mode.
 declare -A SKILLMODES=(
     [code]='ponytail mattpocock-skills security-audit tracker logo-design'
     [web]='ponytail mattpocock-skills security-audit claude-seo accessibility best-practices core-web-vitals performance seo web-quality-audit pagespeed-insights tracker logo-design'
@@ -1536,7 +1537,8 @@ declare -A SKILLMODES=(
     [red]='claude-red security-audit tracker'
     [all]='ponytail superpowers mattpocock-skills security-audit claude-seo accessibility best-practices core-web-vitals performance seo web-quality-audit pagespeed-insights humanizer diagram-design find-skills tracker logo-design'
 )
-
+# Personal skills that belong in every mode come from SKILLMODES_EXTRA in ~/.config/secrets/env,
+# so this public file doesn't list them.
 if [ -n "${SKILLMODES_EXTRA:-}" ]; then
     for _mode in "${!SKILLMODES[@]}"; do SKILLMODES[$_mode]+=" $SKILLMODES_EXTRA"; done
     unset _mode
@@ -1852,7 +1854,11 @@ function rpi-raw {
 }
 alias piwatch='tmux -L piwatch a -t piwatch'
 
+# Termux runs tailscaled in userspace mode with its own socket, so the CLI (and ssh's
+# ProxyCommand) must be pointed at it or every tailscale command fails.
 _ts_sock=/data/data/com.termux/files/home/.tailscale/tailscaled.sock
+# Test the directory, not the socket: services start in the background, so the first shell
+# after a restart can run before tailscaled has created the socket.
 if [ -d "${_ts_sock%/*}" ]; then
     tailscale() { command tailscale --socket="$_ts_sock" "$@"; }
     _ts_proxy="ProxyCommand=tailscale --socket=$_ts_sock nc %h %p"
@@ -1860,6 +1866,8 @@ else
     _ts_proxy="ProxyCommand=tailscale nc %h %p"
 fi
 
+# tssh [host|user@host] [command...]. With no host it lists the Tailscale machines to pick
+# from by number or name; enter takes TSSH_PEER_<THIS HOST> from ~/.config/secrets/env.
 tssh() {
     local target=${1:-}
     shift || true
@@ -1867,8 +1875,8 @@ tssh() {
     local -a peers
     local line name os state ip host_os='' host_ip=''
     # one line per machine: name os online|offline ip
-    mapfile -t peers < <(tailscale status --self=false 2>/dev/null \
-        | awk '$1 ~ /^(100\.|fd7a:)/ { print $2, $4, ($0 ~ /offline/ ? "offline" : "online"), $1 }')
+    mapfile -t peers < <(tailscale status --self=false 2>/dev/null |
+        awk '$1 ~ /^(100\.|fd7a:)/ { print $2, $4, ($0 ~ /offline/ ? "offline" : "online"), $1 }')
 
     if [ -z "$target" ]; then
         local local_host map_name default choice i
@@ -1923,8 +1931,8 @@ _trsync() {
             *:*)
                 host=${arg%%:*}
                 host=${host#*@}
-                if tailscale status --self=false 2>/dev/null \
-                    | awk -v h="$host" '($1 == h || $2 == h) && $4 == "android" { found = 1 } END { exit !found }'; then
+                if tailscale status --self=false 2>/dev/null |
+                    awk -v h="$host" '($1 == h || $2 == h) && $4 == "android" { found = 1 } END { exit !found }'; then
                     port=8022
                 fi
                 ;;
@@ -2006,14 +2014,12 @@ _cnf_jump() {
 # OSC 7: tells tmux (here, or on the machine you ssh'd from) which host and dir this shell is in.
 # OSC 2: titles the pane "bash" at the prompt, and the command line while one runs (PS0), so tmux names windows after it.
 _osc7() { printf '\e]7;file://%s%s\a\e]2;bash\a' "$HOSTNAME" "${PWD//[[:cntrl:]]/?}"; }
-_title_cmd() {
-    local c
-    c=$(HISTTIMEFORMAT= history 1)
-    c=${c#*[0-9]  }
-    printf '\e]2;%s\a' "${c//[[:cntrl:]]/ }"
-}
+_title_cmd() { local c; c=$(HISTTIMEFORMAT= history 1); c=${c#*[0-9]  }; printf '\e]2;%s\a' "${c//[[:cntrl:]]/ }"; }
 
-PROMPT_COMMAND='_cnf_jump; _osc7'
+# A program that dies without cleanup (a dropped ssh) leaves mouse reporting and focus events on; the shell then prints them.
+_term_reset() { printf '\e[?1000l\e[?1002l\e[?1003l\e[?1004l\e[?1006l\e[?1015l'; }
+
+PROMPT_COMMAND='_cnf_jump; _term_reset; _osc7'
 PS0='$(_title_cmd)'
 
 PS1='\[\e[1;37m\][\u@\h \[\e[90m\]$(_short_path)\[\e[0m\]\[\e[1;37m\]]\[\e[0m\]\$ '
@@ -2051,7 +2057,9 @@ shopt -s autocd
 
 # Created by `pipx` on 2026-03-23 13:01:31
 export PATH="$HOME/.local/bin:$PATH"
-# Never run scripts straight from ~/syncthing
+# Never run scripts straight from ~/syncthing (no PATH entry, no symlinks into it): on the phone
+# it is Android shared storage, which any app with "All files access" can write, and Syncthing
+# carries those edits to every machine. Copy a script into ~/.local/bin after reading it.
 
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
@@ -2080,6 +2088,9 @@ _dedupe_path() {
 _dedupe_path PATH
 _dedupe_path MANPATH
 
+# tracker's completion script is static, so it's defined here rather than via
+# `eval "$(tracker completion bash)"`, which starts Python and loads the synced
+# tracker database (a pickle) every time a shell starts.
 if command -v tracker >/dev/null 2>&1; then
     _tracker_complete() {
         local current="${COMP_WORDS[COMP_CWORD]}"
@@ -2089,7 +2100,9 @@ if command -v tracker >/dev/null 2>&1; then
     complete -o default -F _tracker_complete tracker t
 fi
 
-if [ ! -L "$HOME/.bashrc" ] && [ -f "$sync/.bashrc" ] && command -v bashrc-sync >/dev/null 2>&1 \
-    && ! cmp -s "$HOME/.bashrc" "$sync/.bashrc"; then
+# Where ~/.bashrc is a private copy of this file rather than a link to it (the phone: anything
+# with storage access can write the synced one), bashrc-sync moves changes between the two.
+if [ ! -L "$HOME/.bashrc" ] && [ -f "$sync/.bashrc" ] && command -v bashrc-sync >/dev/null 2>&1 &&
+    ! cmp -s "$HOME/.bashrc" "$sync/.bashrc"; then
     printf 'bashrc: ~/.bashrc and the synced copy differ (bashrc-sync pull | push)\n' >&2
 fi
