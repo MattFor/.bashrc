@@ -9,7 +9,9 @@ HISTFILESIZE=2000000
 # Keep credentials out of the (huge) history file; a leading space also skips a line.
 # HISTIGNORE is colon-separated and can't escape a colon, so `?` stands in for one.
 HISTCONTROL=ignoreboth
-HISTIGNORE='*Bearer *:*_TOKEN=*:*PASSWORD=*:*SECRET=*:*mongodb*?//*@*:*ghp_*:*github_pat_*:*_authToken*'
+HISTIGNORE='*Bearer *:*TOKEN=*:*PASSWORD=*:*SECRET=*:*_KEY=*:*sk-ant-*:*mongodb*?//*@*:*ghp_*:*github_pat_*:*_authToken*'
+# Without it every exiting shell overwrites the file with its own list, losing other panes' commands.
+shopt -s histappend
 
 sync="${SYNC_DIR:-"$HOME/syncthing"}"
 s="$sync"
@@ -27,6 +29,10 @@ fi
 # Void-only; elsewhere (the phone) `install` stays coreutils' and `update` the local script.
 if command -v xbps-install >/dev/null 2>&1; then
     install() {
+        [[ $- == *i* ]] || {
+            command install "$@"
+            return
+        }
         sudo xbps-install -S "$@"
     }
 
@@ -63,7 +69,7 @@ mvpr() {
     rsync -ah --progress --remove-source-files "$@"
 }
 
-# yt-dlp shortcuts. Files land in ~/Downloads (override with YT_DIR).
+# yt-dlp shortcuts. Files land in the XDG download dir (override with YT_DIR).
 #   yt <url> [args]   best video+audio, merged to mp4
 #   yt a   <url>      audio only -> mp3
 #   yt t   <url>      thumbnail only
@@ -71,7 +77,7 @@ mvpr() {
 yt() {
     # The phone has its own `yt {vid|mp3|png} URL` script; hand those through to it.
     case "${1:-}" in vid | mp3 | png) if type -P yt >/dev/null; then command yt "$@"; return; fi ;; esac
-    local out="${YT_DIR:-$HOME/Downloads}"
+    local out="${YT_DIR:-$(xdg-user-dir DOWNLOAD 2>/dev/null || printf '%s' "$HOME/downloads")}"
     case "${1:-}" in
         a | audio)
             shift
@@ -100,7 +106,7 @@ reloadcaddy() {
 }
 
 copy() {
-    if [ ! -t 0 ]; then
+    if [ $# -eq 0 ] && [ ! -t 0 ]; then
         xclip -selection clipboard -in
         return $?
     fi
@@ -157,7 +163,7 @@ cpimgtxt() {
 }
 
 hash() {
-    [[ $1 == -* ]] && {
+    [[ $1 == -* || $- != *i* ]] && {
         builtin hash "$@"
         return
     }
@@ -321,7 +327,8 @@ EOF
 
     local -a queue=()
     if [[ $# -gt 0 ]]; then
-        queue=("$@")
+        # Tab completion leaves a trailing slash, which would make the name empty.
+        queue=("${@%/}")
     else
         local entry
         for entry in *; do
@@ -333,9 +340,10 @@ EOF
     local path sub
     for path in "${queue[@]}"; do
         if [[ $recursive -eq 1 && -d "$path" && ! -L "$path" ]]; then
+            # Relative to $path, so a hidden directory above it doesn't hide everything below.
             while IFS= read -r -d '' sub; do
-                targets+=("$sub")
-            done < <(find "$path" -mindepth 1 -depth -not -path '*/.*' -print0)
+                targets+=("$path/${sub#./}")
+            done < <(builtin cd -- "$path" && find . -mindepth 1 -depth -not -path '*/.*' -print0)
         fi
         targets+=("$path")
     done
@@ -414,8 +422,10 @@ EOF
             fi
             out="archive.tar.xz"
             tmp="${out}.tmp"
-            tar --exclude="$out" --exclude="$tmp" -cvf "$tmp" -I 'xz -9e --threads=0' "$@"
-            mv -f "$tmp" "$out"
+            tar --exclude="$out" --exclude="$tmp" -cvf "$tmp" -I 'xz -9e --threads=0' "$@" && mv -f "$tmp" "$out" || {
+                rm -f "$tmp"
+                return 1
+            }
             ;;
 
         gz | gzip)
@@ -425,8 +435,10 @@ EOF
             fi
             out="archive.tar.gz"
             tmp="${out}.tmp"
-            tar --exclude="$out" --exclude="$tmp" -cvf "$tmp" -I 'gzip -9' "$@"
-            mv -f "$tmp" "$out"
+            tar --exclude="$out" --exclude="$tmp" -cvf "$tmp" -I 'gzip -9' "$@" && mv -f "$tmp" "$out" || {
+                rm -f "$tmp"
+                return 1
+            }
             ;;
 
         zstd)
@@ -436,8 +448,10 @@ EOF
             fi
             out="archive.tar.zst"
             tmp="${out}.tmp"
-            tar --exclude="$out" --exclude="$tmp" -cvf "$tmp" -I 'zstd -19 -T0' "$@"
-            mv -f "$tmp" "$out"
+            tar --exclude="$out" --exclude="$tmp" -cvf "$tmp" -I 'zstd -19 -T0' "$@" && mv -f "$tmp" "$out" || {
+                rm -f "$tmp"
+                return 1
+            }
             ;;
 
         bz2 | bzip2)
@@ -447,8 +461,10 @@ EOF
             fi
             out="archive.tar.bz2"
             tmp="${out}.tmp"
-            tar --exclude="$out" --exclude="$tmp" -cvf "$tmp" -I 'bzip2 -9' "$@"
-            mv -f "$tmp" "$out"
+            tar --exclude="$out" --exclude="$tmp" -cvf "$tmp" -I 'bzip2 -9' "$@" && mv -f "$tmp" "$out" || {
+                rm -f "$tmp"
+                return 1
+            }
             ;;
 
         lz4)
@@ -458,12 +474,16 @@ EOF
             fi
             out="archive.tar.lz4"
             tmp="${out}.tmp"
-            tar --exclude="$out" --exclude="$tmp" -cvf "$tmp" -I 'lz4 -9' "$@"
-            mv -f "$tmp" "$out"
+            tar --exclude="$out" --exclude="$tmp" -cvf "$tmp" -I 'lz4 -9' "$@" && mv -f "$tmp" "$out" || {
+                rm -f "$tmp"
+                return 1
+            }
             ;;
 
         zip)
             out="archive.zip"
+            # zip, rar and 7z add to an existing archive instead of replacing it.
+            rm -f "$out"
             if [[ $use_password -eq 1 ]]; then
                 zip -e -r "$out" "$@"
             else
@@ -473,6 +493,7 @@ EOF
 
         rar)
             out="archive.rar"
+            rm -f "$out"
             if [[ $use_password -eq 1 ]]; then
                 rar a -hp "$out" "$@"
             else
@@ -482,6 +503,7 @@ EOF
 
         7z)
             out="archive.7z"
+            rm -f "$out"
             if [[ $use_password -eq 1 ]]; then
                 7z a -t7z -mx=9 -mhe=on -p "$out" "$@"
             else
@@ -500,7 +522,7 @@ EOF
 md() {
     local args=("$@")
 
-    [ -t 0 ] || args=(-)
+    [ $# -gt 0 ] || [ -t 0 ] || args=(-)
 
     if [ -t 1 ]; then
         glow -p "${args[@]}"
@@ -568,7 +590,7 @@ peek() {
             return $?
             ;;
         application/x-xz | application/x-compress* | application/x-lzip)
-            tar -tvJf "$file"
+            tar -tvf "$file"
             return $?
             ;;
         application/x-lz4 | application/lz4)
@@ -594,7 +616,7 @@ peek() {
             return $?
             ;;
         application/x-tar)
-            tar -tvf -- "$file"
+            tar -tvf "$file"
             return $?
             ;;
     esac
@@ -712,10 +734,11 @@ minify() (
         ./ "$DIST/"
 
     find . \
+        \( -name .git -o -name .github -o -name .gitlab -o -name .svn -o -name node_modules \
+        -o -name .cache -o -name .vscode -o -name .idea -o -name coverage -o -name tmp -o -path "./$DIST" \) -prune -o \
         -type f \
         \( -name '*.js' -o -name '*.css' \) \
-        ! -path "./$DIST/*" \
-        ! -path './node_modules/*' \
+        -print \
         | while IFS= read -r file; do
 
             local out="$DIST/${file#./}"
@@ -867,9 +890,12 @@ gitrecurse() {
         return 127
     fi
 
-    gitrecurse-repo "$msg"
+    # Reversed pre-order is deepest first, so every parent commits its submodules' new commits.
+    git submodule foreach --recursive --quiet 'printf "%s\n" "$toplevel/$sm_path"' | tac | while IFS= read -r sub; do
+        (cd "$sub" && gitrecurse-repo "$msg")
+    done
 
-    git submodule foreach --recursive "gitrecurse-repo '$msg'"
+    gitrecurse-repo "$msg"
 }
 
 gitpr() {
@@ -979,7 +1005,7 @@ rpi-up() {
 rpi-dl() {
     if [ $# -lt 1 ] || [ $# -gt 2 ]; then
         echo "Usage: rpi-dl <remote_path> [local_dir]"
-        echo "  relative remote paths start at the Pi home (the bot is in relaxy/)"
+        echo "  relative remote paths start at the Pi home"
         return 1
     fi
 
@@ -994,7 +1020,7 @@ rpi-dl() {
 }
 
 rpi-ls() {
-    $___rel_ssh "ls ${1:-}"
+    $___rel_ssh "ls -- $(printf '%q' "${1:-.}")"
 }
 
 _tar_from_stdin() {
@@ -1715,6 +1741,10 @@ a() {
 }
 
 cc() {
+    [[ $- == *i* ]] || {
+        command cc "$@"
+        return
+    }
     if [[ $# -ne 3 ]]; then
         echo "Usage: cc <amount> <from_currency> <to_currency>" >&2
         return 1
@@ -1758,31 +1788,33 @@ tz() {
     local from_zone
     local to_zone
 
+    # Fixed offsets: a city zone would apply whatever DST is in effect today (EST would act as EDT in July).
+    # Etc/GMT signs are inverted: Etc/GMT+5 is UTC-5.
     declare -A zones=(
         [UTC]="UTC"
-        [GMT]="Europe/London"
-        [BST]="Europe/London"
-        [CET]="Europe/Warsaw"
-        [CEST]="Europe/Warsaw"
-        [WET]="Europe/Lisbon"
-        [WEST]="Europe/Lisbon"
-        [EET]="Europe/Helsinki"
-        [EEST]="Europe/Helsinki"
+        [GMT]="UTC"
+        [BST]="Etc/GMT-1"
+        [CET]="Etc/GMT-1"
+        [CEST]="Etc/GMT-2"
+        [WET]="UTC"
+        [WEST]="Etc/GMT-1"
+        [EET]="Etc/GMT-2"
+        [EEST]="Etc/GMT-3"
 
-        [EST]="America/New_York"
-        [EDT]="America/New_York"
-        [CST]="America/Chicago"
-        [CDT]="America/Chicago"
-        [MST]="America/Denver"
-        [MDT]="America/Denver"
-        [PST]="America/Los_Angeles"
-        [PDT]="America/Los_Angeles"
+        [EST]="Etc/GMT+5"
+        [EDT]="Etc/GMT+4"
+        [CST]="Etc/GMT+6"
+        [CDT]="Etc/GMT+5"
+        [MST]="Etc/GMT+7"
+        [MDT]="Etc/GMT+6"
+        [PST]="Etc/GMT+8"
+        [PDT]="Etc/GMT+7"
 
-        [JST]="Asia/Tokyo"
-        [KST]="Asia/Seoul"
+        [JST]="Etc/GMT-9"
+        [KST]="Etc/GMT-9"
         [IST]="Asia/Kolkata"
-        [AEST]="Australia/Sydney"
-        [AEDT]="Australia/Sydney"
+        [AEST]="Etc/GMT-10"
+        [AEDT]="Etc/GMT-11"
     )
 
     from_zone="${zones[$from]}"
@@ -1836,8 +1868,21 @@ alias ff='fastfetch'
 alias open='xdg-open'
 alias lt='e leetcode.nvim'
 alias qr="zbarimg -q --raw"
-alias torus='$___name'
-alias rpi='$___rel_ssh'
+# Functions, not aliases: an unset variable would leave the rest of the line to run locally.
+function torus {
+    [ -n "${___name:-}" ] || {
+        printf '%s\n' "Set ___name in ~/.config/secrets/env first." >&2
+        return 2
+    }
+    $___name "$@"
+}
+function rpi {
+    [ -n "${___rel_ssh:-}" ] || {
+        printf '%s\n' "Set ___rel_ssh in ~/.config/secrets/env first." >&2
+        return 2
+    }
+    $___rel_ssh "$@"
+}
 
 function rpi-raw {
     local target=${RPI_SSH_TARGET:-}
@@ -1923,13 +1968,15 @@ tssh() {
 
 # rsync starts its shell as `<shell> -l user host`, which `tailscale ssh` rejects, so use plain ssh
 # through `tailscale nc`. A phone (android) has no Tailscale SSH server; Termux's sshd listens on 8022.
+# Like tssh, a host given without user@ logs in as TSSH_USER.
 _trsync() {
-    local arg host port=22
+    local arg host port=22 user=''
     for arg; do
         case $arg in
             -*) ;;
             *:*)
                 host=${arg%%:*}
+                [[ $host == *@* ]] || user=${TSSH_USER:-${USER:-}}
                 host=${host#*@}
                 if tailscale status --self=false 2>/dev/null |
                     awk -v h="$host" '($1 == h || $2 == h) && $4 == "android" { found = 1 } END { exit !found }'; then
@@ -1938,7 +1985,7 @@ _trsync() {
                 ;;
         esac
     done
-    rsync -ah --progress -e "ssh -p $port -o StrictHostKeyChecking=accept-new -o '$_ts_proxy'" "$@"
+    rsync -ah --progress -e "ssh -p $port${user:+ -l $user} -o StrictHostKeyChecking=accept-new -o '$_ts_proxy'" "$@"
 }
 
 # Copy files between this computer and a Tailscale machine.
@@ -2040,8 +2087,10 @@ command_not_found_handle() {
             ;;
     esac
 
+    # Only a bare word typed at an interactive prompt is a jump; a missing command with arguments,
+    # or one called from a script or function, must still fail.
     local dir
-    [ -n "$_cnf_jump_file" ] && dir="$(zoxide query "$cmd" 2>/dev/null)" || {
+    [[ $- == *i* ]] && [ $# -eq 1 ] && [ -n "$_cnf_jump_file" ] && dir="$(zoxide query "$cmd" 2>/dev/null)" || {
         printf 'bash: %s: command not found\n' "$cmd" >&2
         return 127
     }
@@ -2049,8 +2098,14 @@ command_not_found_handle() {
     printf '%s' "$dir" >"$_cnf_jump_file"
 }
 
+# zoxide's fuzzy jump only in an interactive shell, for one name that isn't a directory; scripts and
+# agent shells get the real cd, which fails on a missing path. zoxide's prompt hook still records every directory.
 cd() {
-    z "$@"
+    if [[ $- == *i* ]] && [ $# -eq 1 ] && [ "$1" != - ] && [ ! -d "$1" ]; then
+        z "$1"
+    else
+        builtin cd "$@"
+    fi
 }
 
 shopt -s autocd
