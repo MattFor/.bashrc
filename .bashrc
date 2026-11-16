@@ -2018,7 +2018,7 @@ alias sandbox='firejail --private=. bash'
 
 # Obsolete
 alias prolog="setsid swipl-win & disown"
-alias rundockerdb='docker start oracle-xe'
+alias rundockerdb='sudo docker start oracle-xe' # no docker group: it is root-equivalent
 
 # Pretty display
 if command -v dircolors >/dev/null 2>&1; then
