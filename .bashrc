@@ -1530,12 +1530,12 @@ ai() {
 # symlinks its set into ~/.claude/skills. New sessions pick up the change.
 # Cursor also always reads ~/.agents/skills, so those stay visible to it in every mode.
 declare -A SKILLMODES=(
-    [code]='ponytail mattpocock-skills security-audit tracker logo-design'
-    [web]='ponytail mattpocock-skills security-audit claude-seo accessibility best-practices core-web-vitals performance seo web-quality-audit pagespeed-insights tracker logo-design'
-    [superpowers]='superpowers mattpocock-skills security-audit tracker'
-    [write]='humanizer diagram-design brag tracker'
-    [red]='claude-red security-audit tracker'
-    [all]='ponytail superpowers mattpocock-skills security-audit claude-seo accessibility best-practices core-web-vitals performance seo web-quality-audit pagespeed-insights humanizer diagram-design find-skills tracker logo-design'
+    [code]='ponytail mattpocock-skills security-audit tracker orchestrator logo-design'
+    [web]='ponytail mattpocock-skills security-audit claude-seo accessibility best-practices core-web-vitals performance seo web-quality-audit pagespeed-insights tracker orchestrator logo-design'
+    [superpowers]='superpowers mattpocock-skills security-audit tracker orchestrator'
+    [write]='humanizer diagram-design brag tracker orchestrator'
+    [red]='claude-red security-audit tracker orchestrator'
+    [all]='ponytail superpowers mattpocock-skills security-audit claude-seo accessibility best-practices core-web-vitals performance seo web-quality-audit pagespeed-insights humanizer diagram-design find-skills tracker orchestrator logo-design'
 )
 # Personal skills that belong in every mode come from SKILLMODES_EXTRA in ~/.config/secrets/env,
 # so this public file doesn't list them.
