@@ -2115,6 +2115,9 @@ export PATH="$HOME/.local/bin:$PATH"
 # Never run scripts straight from ~/syncthing (no PATH entry, no symlinks into it): on the phone
 # it is Android shared storage, which any app with "All files access" can write, and Syncthing
 # carries those edits to every machine. Copy a script into ~/.local/bin after reading it.
+# ~/shared is different: a Syncthing folder only the PC and laptop share. Its scripts are linked into
+# ~/.local/bin; this entry, after it, makes one added on the other machine usable before it is linked.
+[ -d "$HOME/shared/bin" ] && export PATH="$PATH:$HOME/shared/bin"
 
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
