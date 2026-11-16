@@ -11,91 +11,91 @@ Makes life a lot easier.
 
 ## Requirements
 
-### install, remove, removeoldkernels, update
+Startup needs bash with associative arrays (not macOS's stock bash) and `zoxide`: without it every new shell prints an error, and `..`, the `cd` fallback and bare-word directory jumps break. `micro` is `$EDITOR`. Everything else is needed only by the function that calls it. The functions assume GNU coreutils, findutils, sed and tar.
 
-`xbps`
+| Function / alias                               | Needs                                                                                                                                                                                                                                                                 |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `install`, `remove`, `removeoldkernels`        | `xbps`, `vkpurge`, `sudo` (Void only)                                                                                                                                                                                                                                 |
+| `update`                                       | `xbps` or an `update` command; `rustup`, `flatpak` if installed                                                                                                                                                                                                       |
+| `mvp`, `mvpr`                                  | `rsync`                                                                                                                                                                                                                                                               |
+| `yt`                                           | `yt-dlp`, `ffmpeg`; `xdg-user-dir` for the download folder                                                                                                                                                                                                            |
+| `reloadcaddy`                                  | `caddy`, `sudo`                                                                                                                                                                                                                                                       |
+| `copy`, `imgtxt`, `cpimgtxt`                   | `xclip` (X11); `imgtxt` also ImageMagick's `magick` and `tesseract-ocr`                                                                                                                                                                                               |
+| `topdf`                                        | LibreOffice (`soffice`)                                                                                                                                                                                                                                               |
+| `rmexif`                                       | `exiftool`                                                                                                                                                                                                                                                            |
+| `compress`, `peek`                             | `tar`, `xz`, `gzip`, `bzip2`, `zstd`, `lz4`, `zip`, `unzip`, `7z`, `file`; `rar` / `unrar` for RAR                                                                                                                                                                    |
+| `md`                                           | `glow`                                                                                                                                                                                                                                                                |
+| `activate`, `workon`                           | `python3` with `venv`                                                                                                                                                                                                                                                 |
+| `minify`                                       | `esbuild`, `rsync`                                                                                                                                                                                                                                                    |
+| `gitrepo`, `gitremake`, `gitdiff`, `gitgraph`  | `git`                                                                                                                                                                                                                                                                 |
+| `gitpr`                                        | `git`, `gh`, `tea`                                                                                                                                                                                                                                                    |
+| `rpi`, `rpi-up`, `rpi-dl`, `rpi-ls`, `rpi-raw` | `ssh`; `pv` for progress                                                                                                                                                                                                                                              |
+| `tssh`, `tcopy`, `tmove`                       | `tailscale`, `ssh`, `rsync`                                                                                                                                                                                                                                           |
+| `c`                                            | `g++` new enough for `-std=gnu++26`                                                                                                                                                                                                                                   |
+| `rdoc`                                         | `rustup` with the `rust-docs` component, `rg`, `fzf`, `bat`, `w3m`, `xmllint`, `curl`                                                                                                                                                                                 |
+| `bt`, `btup`, `btdown`                         | runit, `bluez`, `rfkill`, `sudo`                                                                                                                                                                                                                                      |
+| `virt`, `virtup`, `virtdown`                   | runit, `libvirt`, `sudo`                                                                                                                                                                                                                                              |
+| `a`                                            | `pactl`                                                                                                                                                                                                                                                               |
+| `cc`                                           | `curl`, `jq`                                                                                                                                                                                                                                                          |
+| `tz`                                           | GNU `date`                                                                                                                                                                                                                                                            |
+| Aliases                                        | `bat` (`r`), `nvim` (`e`, `lt`), `micro` (`m`, `ee`, `nano`), `gdu` (`disk`), `zathura` (`pdf`), `fastfetch` (`ff`), `xdg-open` (`open`), `zbarimg` (`qr`), `tmux` (`piwatch`), `firejail` (`sandbox`); leftovers `prolog` (`swipl-win`) and `rundockerdb` (`docker`) |
 
-### mvp, mvpr
-
-`rsync`
-
-### reloadcaddy
-
-`caddy`
-
-### copy, imgtxt, cpimgtxt
-
-`xclip, tesseract-ocr`
-
-### topdf
-
-`libreoffice`
-
-### rmexif
-
-`exiftool`
-
-### compress, peek
-
-`tar, xz, gzip, bzip2, zstd, lz4, zip, rar, 7z, unzip, file`
-
-### md
-
-`glow`
-
-### activate
-
-`python3`
-
-### minify
-
-`esbuild, rsync`
-
-### gitrepo, gitremake, gitgraph, gitrecurse
-
-`git`
-
-### relaxy-dl
-
-`openssh`
-
-### llmon, llmoff
-
-`ollama, fzf, awk, sed, procps`
-
-### c
-
-`gcc`
-
-### rdoc
-
-`rustup, rg, fzf, bat, w3m, xmllint, curl`
-
-### dockeron, dockeroff
-
-`docker, runit`
-
-### btup, btdown
-
-`runit, rfkill, bluez`
-
-### virtup, virtdown
-
-`libvirt, runit`
-
-### cc
-
-`curl, jq, awk`
-
-### aliases / misc
-
-`micro, zathura, fastfetch, xdg-utils, zbar, firejail, tmux, zoxide`
+Not in this repo: MattFor's own `ai-hub` / `ai-cli` (`ai`) and `gitrecurse-repo` (`gitrecurse`); `skillmode` expects skill folders under `~/.claude`. Per-user settings (`CODEBERG_USER`, `GITHUB_USER`, `___rel_ssh`, `___name`, `RPI_SSH_*`, `TSSH_*`) go in `~/.config/secrets/env`, which is sourced when present.
 
 ## Install
 
-### Everything
+### The file
 
-`sudo xbps-install -S rsync caddy xclip tesseract-ocr libreoffice exiftool xz gzip bzip2 zstd lz4 zip p7zip-unrar unzip file mdcat esbuild git openssh ollama fzf gcc rustup bat w3m libxml2 curl jq docker rfkill bluez libvirt micro zathura fastfetch zbar firejail tmux zoxide`
+Back up your own `~/.bashrc` first; this replaces it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/MattFor/.bashrc/master/.bashrc -o ~/.bashrc
+```
+
+### Packages
+
+Everything above that has a package. `caddy`, `bluez`, `libvirt` and the non-free RAR tools are left out: add them if you use `reloadcaddy`, `bt`, `virt` or RAR archives.
+
+```sh
+# Void
+sudo xbps-install -S zoxide micro neovim bat fzf ripgrep w3m libxml2 curl jq rsync glow gdu yt-dlp ffmpeg xclip ImageMagick tesseract-ocr tesseract-ocr-eng libreoffice exiftool zbar xz gzip bzip2 zstd lz4 zip unzip file 7zip python3 esbuild git github-cli tea openssh pv tailscale gcc rustup firejail fastfetch zathura zathura-pdf-mupdf xdg-utils xdg-user-dirs tmux
+# Debian, Ubuntu
+sudo apt install zoxide micro neovim bat fzf ripgrep w3m libxml2-utils curl jq rsync glow gdu yt-dlp ffmpeg xclip imagemagick tesseract-ocr libreoffice libimage-exiftool-perl zbar-tools xz-utils gzip bzip2 zstd lz4 zip unzip file 7zip python3 python3-venv esbuild git gh openssh-client pv g++ rustup firejail fastfetch zathura xdg-utils xdg-user-dirs tmux
+# Fedora
+sudo dnf install zoxide micro neovim bat fzf ripgrep w3m libxml2 curl jq rsync glow gdu yt-dlp ffmpeg-free xclip ImageMagick tesseract libreoffice perl-Image-ExifTool zbar xz gzip bzip2 zstd lz4 zip unzip file 7zip python3 golang-github-evanw-esbuild git gh openssh-clients pv tailscale gcc-c++ rustup firejail fastfetch zathura zathura-pdf-poppler xdg-utils xdg-user-dirs tmux
+# Arch
+sudo pacman -S --needed zoxide micro neovim bat fzf ripgrep w3m libxml2 curl jq rsync glow gdu yt-dlp ffmpeg xclip imagemagick tesseract tesseract-data-eng libreoffice-fresh perl-image-exiftool zbar xz gzip bzip2 zstd lz4 zip unzip file 7zip python esbuild git github-cli openssh pv tailscale gcc rustup firejail fastfetch zathura zathura-pdf-mupdf xdg-utils xdg-user-dirs tmux
+# openSUSE Tumbleweed
+sudo zypper install zoxide micro-editor neovim bat fzf ripgrep w3m libxml2-tools curl jq rsync glow gdu yt-dlp ffmpeg xclip ImageMagick tesseract-ocr tesseract-ocr-traineddata-eng libreoffice exiftool zbar xz gzip bzip2 zstd lz4 zip unzip file 7zip python3 esbuild git gh gitea-tea openssh-clients pv tailscale gcc-c++ rustup firejail fastfetch zathura zathura-plugin-pdf-poppler xdg-utils xdg-user-dirs tmux
+# Alpine (community repo), with the GNU tools busybox lacks
+sudo apk add bash coreutils findutils tar zoxide micro neovim bat fzf ripgrep w3m libxml2-utils curl jq rsync gdu yt-dlp ffmpeg xclip imagemagick tesseract-ocr tesseract-ocr-data-eng libreoffice exiftool zbar xz gzip bzip2 zstd lz4 zip unzip file 7zip python3 esbuild git github-cli tea openssh-client-default pv tailscale g++ rustup fastfetch zathura zathura-pdf-mupdf xdg-utils xdg-user-dirs tmux
+# Termux (no X11, so no clipboard, OCR, PDF viewer or LibreOffice)
+pkg install zoxide micro neovim bat fzf ripgrep w3m libxml2-utils curl jq rsync glow gdu python-yt-dlp ffmpeg exiftool zbar xz-utils gzip bzip2 zstd lz4 zip unzip file 7zip python esbuild git gh tea openssh pv clang fastfetch tmux
+```
+
+| Missing     | From                                       | Get it                                                                                                                                                                                                                           |
+| ----------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tea`       | apt, dnf, pacman                           | [Release binaries](https://gitea.com/gitea/tea/releases); Arch: AUR                                                                                                                                                              |
+| `tailscale` | apt, Termux                                | apt: `curl -fsSL https://tailscale.com/install.sh \| sh`; Termux: the static arm64 build from [pkgs.tailscale.com](https://pkgs.tailscale.com/stable/#static), `tailscaled` in userspace mode with its socket in `~/.tailscale/` |
+| `glow`      | Alpine (edge only), older Ubuntu           | [Release binaries](https://github.com/charmbracelet/glow/releases)                                                                                                                                                               |
+| `fastfetch` | older Ubuntu                               | [Release binaries](https://github.com/fastfetch-cli/fastfetch/releases)                                                                                                                                                          |
+| `firejail`  | Alpine, Termux                             | Not available                                                                                                                                                                                                                    |
+| `rustup`    | Termux                                     | [rustup.rs](https://rustup.rs) installer (untested there)                                                                                                                                                                        |
+| `rar`       | all but Debian non-free, Ubuntu multiverse | [rarlab.com](https://www.rarlab.com); `unrar` alone is enough for `peek` and is in Debian non-free, Ubuntu multiverse, Arch, openSUSE non-oss, Termux and Void's nonfree repo                                                    |
+
+Debian and Ubuntu install `bat` as `batcat`: `ln -s /usr/bin/batcat ~/.local/bin/bat`. Older Ubuntu releases also lack the `magick` command `imgtxt` uses. macOS isn't supported: it would need Homebrew's bash with GNU coreutils, findutils and tar ahead of the BSD tools, and the clipboard, service and audio functions are Linux-only.
+
+### Other systems
+
+Parts that assume MattFor's Void machines:
+
+| Part                                    | Elsewhere                                                                                                                                       |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `install`, `remove`, `removeoldkernels` | Defined only when `xbps-install` exists, so `install` stays coreutils' elsewhere                                                                |
+| `update`                                | Runs `xbps-install -Syu`, else an `update` command on `PATH`, then `rustup` and `flatpak`; put your own upgrade in an `update` script           |
+| `bt`, `virt` and their aliases          | Drive runit services (`/etc/sv`, `/var/service`, `sv`); on systemd start them with `systemctl` (`virt` starts the daemons itself without runit) |
+| `imgtxt`                                | Calls `tesseract-ocr`, Void's name for `tesseract`: `ln -s "$(command -v tesseract)" ~/.local/bin/tesseract-ocr`                                |
+| `a`                                     | Switches between two of MattFor's audio sinks by name; edit them                                                                                |
 
 ## License
 
