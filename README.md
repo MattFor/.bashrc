@@ -11,8 +11,6 @@ Makes life a lot easier.
 
 ## Requirements
 
-Startup needs bash with associative arrays (not macOS's stock bash) and `zoxide`: without it every new shell prints an error, and `..`, the `cd` fallback and bare-word directory jumps break. `micro` is `$EDITOR`. Everything else is needed only by the function that calls it. The functions assume GNU coreutils, findutils, sed and tar.
-
 | Function / alias                               | Needs                                                                                                                                                                                                                                                                 |
 | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `install`, `remove`, `removeoldkernels`        | `xbps`, `vkpurge`, `sudo` (Void only)                                                                                                                                                                                                                                 |
@@ -39,8 +37,6 @@ Startup needs bash with associative arrays (not macOS's stock bash) and `zoxide`
 | `cc`                                           | `curl`, `jq`                                                                                                                                                                                                                                                          |
 | `tz`                                           | GNU `date`                                                                                                                                                                                                                                                            |
 | Aliases                                        | `bat` (`r`), `nvim` (`e`, `lt`), `micro` (`m`, `ee`, `nano`), `gdu` (`disk`), `zathura` (`pdf`), `fastfetch` (`ff`), `xdg-open` (`open`), `zbarimg` (`qr`), `tmux` (`piwatch`), `firejail` (`sandbox`); leftovers `prolog` (`swipl-win`) and `rundockerdb` (`docker`) |
-
-Not in this repo: MattFor's own `ai-hub` / `ai-cli` (`ai`) and `gitrecurse-repo` (`gitrecurse`); `skillmode` expects skill folders under `~/.claude`. Per-user settings (`CODEBERG_USER`, `GITHUB_USER`, `___rel_ssh`, `___name`, `RPI_SSH_*`, `TSSH_*`) go in `~/.config/secrets/env`, which is sourced when present.
 
 ## Install
 
@@ -83,11 +79,9 @@ pkg install zoxide micro neovim bat fzf ripgrep w3m libxml2-utils curl jq rsync 
 | `rustup`    | Termux                                     | [rustup.rs](https://rustup.rs) installer (untested there)                                                                                                                                                                        |
 | `rar`       | all but Debian non-free, Ubuntu multiverse | [rarlab.com](https://www.rarlab.com); `unrar` alone is enough for `peek` and is in Debian non-free, Ubuntu multiverse, Arch, openSUSE non-oss, Termux and Void's nonfree repo                                                    |
 
-Debian and Ubuntu install `bat` as `batcat`: `ln -s /usr/bin/batcat ~/.local/bin/bat`. Older Ubuntu releases also lack the `magick` command `imgtxt` uses. macOS isn't supported: it would need Homebrew's bash with GNU coreutils, findutils and tar ahead of the BSD tools, and the clipboard, service and audio functions are Linux-only.
-
 ### Other systems
 
-Parts that assume MattFor's Void machines:
+Parts that assume Void machines:
 
 | Part                                    | Elsewhere                                                                                                                                       |
 | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -95,7 +89,7 @@ Parts that assume MattFor's Void machines:
 | `update`                                | Runs `xbps-install -Syu`, else an `update` command on `PATH`, then `rustup` and `flatpak`; put your own upgrade in an `update` script           |
 | `bt`, `virt` and their aliases          | Drive runit services (`/etc/sv`, `/var/service`, `sv`); on systemd start them with `systemctl` (`virt` starts the daemons itself without runit) |
 | `imgtxt`                                | Calls `tesseract-ocr`, Void's name for `tesseract`: `ln -s "$(command -v tesseract)" ~/.local/bin/tesseract-ocr`                                |
-| `a`                                     | Switches between two of MattFor's audio sinks by name; edit them                                                                                |
+| `a`                                     | Switches between two of my sinks by name; edit them                                                                                             |
 
 ## License
 
