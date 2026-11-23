@@ -1970,7 +1970,7 @@ tssh() {
 # through `tailscale nc`. A phone (android) has no Tailscale SSH server; Termux's sshd listens on 8022.
 # Like tssh, a host given without user@ logs in as TSSH_USER.
 _trsync() {
-    local arg host port=22 user=''
+    local arg host port='' user=''
     for arg; do
         case $arg in
             -*) ;;
@@ -1985,7 +1985,8 @@ _trsync() {
                 ;;
         esac
     done
-    rsync -ah --progress -e "ssh -p $port${user:+ -l $user} -o StrictHostKeyChecking=accept-new -o '$_ts_proxy'" "$@"
+    # No -p unless android, so ~/.ssh/config can give a host its own port.
+    rsync -ah --progress -e "ssh${port:+ -p $port}${user:+ -l $user} -o StrictHostKeyChecking=accept-new -o '$_ts_proxy'" "$@"
 }
 
 # Copy files between this computer and a Tailscale machine.
@@ -2164,3 +2165,7 @@ if [ ! -L "$HOME/.bashrc" ] && [ -f "$sync/.bashrc" ] && command -v bashrc-sync 
     ! cmp -s "$HOME/.bashrc" "$sync/.bashrc"; then
     printf 'bashrc: ~/.bashrc and the synced copy differ (bashrc-sync pull | push)\n' >&2
 fi
+# >>> Mistral >>>
+export PATH="/home/mattfor/.mistral/bin:$PATH"
+command -v mistral >/dev/null && eval "$(mistral --completions bash)"
+# <<< Mistral <<<
