@@ -89,7 +89,7 @@ Parts that assume Void machines:
 | `update`                                | Runs `xbps-install -Syu`, else an `update` command on `PATH`, then `rustup` and `flatpak`; put your own upgrade in an `update` script           |
 | `bt`, `virt` and their aliases          | Drive runit services (`/etc/sv`, `/var/service`, `sv`); on systemd start them with `systemctl` (`virt` starts the daemons itself without runit) |
 | `imgtxt`                                | Calls `tesseract-ocr`, Void's name for `tesseract`: `ln -s "$(command -v tesseract)" ~/.local/bin/tesseract-ocr`                                |
-| `a`                                     | Switches between two of my sinks by name; edit them                                                                                             |
+| `a`                                     | Switches between two of my audio devices by name; edit them                                                                                     |
 
 ## License
 
