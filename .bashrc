@@ -2169,3 +2169,7 @@ fi
 export PATH="/home/mattfor/.mistral/bin:$PATH"
 command -v mistral >/dev/null && eval "$(mistral --completions bash)"
 # <<< Mistral <<<
+
+
+# Added by Antigravity CLI installer
+export PATH="/home/mattfor/.local/bin:$PATH"
